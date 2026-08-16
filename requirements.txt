@@ -1,1 +1,3 @@
+# pick the one(s) matching BRAIN_PROVIDER — imports are lazy, so you only need what you use
 anthropic>=0.40.0
+openai>=1.50.0
