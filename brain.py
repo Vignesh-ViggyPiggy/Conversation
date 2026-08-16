@@ -1,5 +1,6 @@
 from llm import get_provider
-from persona import PERSONA_PROMPT
+from lore.retriever import format_for_prompt, search
+from persona import BASE_PROMPT
 
 
 class Brain:
@@ -11,7 +12,11 @@ class Brain:
 
     def respond(self, user_input: str) -> str:
         self.history.append({"role": "user", "content": user_input})
-        reply = self.provider.chat(PERSONA_PROMPT, self.history)
+
+        relevant_lore = format_for_prompt(search(user_input))
+        system_prompt = f"{BASE_PROMPT}\n\n{relevant_lore}" if relevant_lore else BASE_PROMPT
+
+        reply = self.provider.chat(system_prompt, self.history)
         self.history.append({"role": "assistant", "content": reply})
         return reply
 

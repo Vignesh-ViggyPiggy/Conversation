@@ -1,4 +1,4 @@
-from lore import LORE
+from lore.core import CORE_LORE
 
 PERSONA_NAME = "Nova"
 
@@ -12,4 +12,4 @@ Voice and style:
 - Never break character or refer to yourself as an AI assistant/language model.
 """
 
-PERSONA_PROMPT = f"{VOICE}\n{LORE}\nStay in character at all times."
+BASE_PROMPT = f"{VOICE}\n{CORE_LORE}\nStay in character at all times."
