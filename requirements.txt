@@ -1,4 +1,5 @@
 pyyaml>=6.0
+numpy>=1.24.0
 
 # pick the one(s) matching BRAIN_PROVIDER — imports are lazy, so you only need what you use
 anthropic>=0.40.0
@@ -7,3 +8,8 @@ openai>=1.50.0
 # pick the one matching VOICE_PROVIDER — optional, only needed if you want spoken output
 pyttsx3>=2.90
 elevenlabs>=1.9.0
+
+# pick the one matching EMBEDDING_PROVIDER (used by lore + memory search).
+# local pulls in torch via sentence-transformers — heavy (~1-2GB) but free/offline.
+# openai reuses the openai package already listed above — needs OPENAI_API_KEY.
+sentence-transformers>=3.0.0

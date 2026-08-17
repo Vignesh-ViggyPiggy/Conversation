@@ -1,9 +1,24 @@
+import json
 import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
+
+from embeddings import get_embedding_provider
+
 DB_PATH = Path(os.environ.get("MEMORY_DB_PATH", Path(__file__).parent.parent / "memory.db"))
+MIN_SCORE = 0.3
+
+_provider = None
+
+
+def _provider_singleton():
+    global _provider
+    if _provider is None:
+        _provider = get_embedding_provider()
+    return _provider
 
 
 def _connect() -> sqlite3.Connection:
@@ -15,6 +30,7 @@ def _connect() -> sqlite3.Connection:
             character TEXT NOT NULL,
             session_id TEXT NOT NULL,
             text TEXT NOT NULL,
+            embedding TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
         """
@@ -23,10 +39,12 @@ def _connect() -> sqlite3.Connection:
 
 
 def add_fact(character: str, session_id: str, text: str) -> None:
+    embedding = _provider_singleton().embed([text])[0]
     with _connect() as conn:
         conn.execute(
-            "INSERT INTO facts (character, session_id, text, created_at) VALUES (?, ?, ?, ?)",
-            (character, session_id, text, datetime.now(timezone.utc).isoformat()),
+            "INSERT INTO facts (character, session_id, text, embedding, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (character, session_id, text, json.dumps(embedding), datetime.now(timezone.utc).isoformat()),
         )
 
 
@@ -39,18 +57,23 @@ def get_facts(character: str) -> list[str]:
 
 
 def search_facts(character: str, query: str, k: int = 5) -> list[str]:
-    """Up to k facts relevant to query, scored by word overlap. Facts with no
-    overlapping words are excluded rather than injected as noise — same
-    behavior as lore/retriever.py's tag matching."""
-    facts = get_facts(character)
-    if not facts:
+    """Up to k facts semantically similar to query, best match first. Fact
+    embeddings were computed once when each fact was written (see add_fact),
+    not recomputed here — only the query is embedded per call."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT text, embedding FROM facts WHERE character = ? ORDER BY id", (character,)
+        ).fetchall()
+    if not rows:
         return []
 
-    query_words = set(query.lower().split())
-    scored = [(len(query_words & set(fact.lower().split())), fact) for fact in facts]
-    scored = [pair for pair in scored if pair[0] > 0]
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    return [fact for _, fact in scored[:k]]
+    texts = [row[0] for row in rows]
+    vectors = np.array([json.loads(row[1]) for row in rows])
+    query_vec = np.array(_provider_singleton().embed([query])[0])
+    scores = vectors @ query_vec
+
+    ranked = sorted(range(len(texts)), key=lambda i: scores[i], reverse=True)
+    return [texts[i] for i in ranked if scores[i] >= MIN_SCORE][:k]
 
 
 def format_facts(facts: list[str]) -> str:
