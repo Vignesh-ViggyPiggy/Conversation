@@ -1,7 +1,9 @@
+import uuid
+
 from llm import get_provider
 from lore.retriever import format_for_prompt, search
 from memory.extractor import extract_facts
-from memory.store import add_fact, format_facts, get_facts
+from memory.store import add_fact, format_facts, search_facts
 from persona import BASE_PROMPT, PERSONA_NAME
 
 
@@ -11,12 +13,13 @@ class Brain:
     def __init__(self):
         self.provider = get_provider()
         self.history: list[dict] = []
+        self.session_id = str(uuid.uuid4())
 
     def respond(self, user_input: str) -> str:
         self.history.append({"role": "user", "content": user_input})
 
         relevant_lore = format_for_prompt(search(user_input))
-        remembered = format_facts(get_facts(PERSONA_NAME))
+        remembered = format_facts(search_facts(PERSONA_NAME, user_input))
 
         system_prompt = BASE_PROMPT
         if relevant_lore:
@@ -26,14 +29,21 @@ class Brain:
 
         reply = self.provider.chat(system_prompt, self.history)
         self.history.append({"role": "assistant", "content": reply})
-
-        for fact in extract_facts(self.provider, user_input, reply):
-            add_fact(PERSONA_NAME, fact)
-
         return reply
 
-    def reset(self) -> None:
-        """Clears working memory (this session's conversation) only — persistent
-        facts survive, by design, since forgetting them on every restart would
-        defeat the point of persistent memory."""
+    def reset(self) -> str | None:
+        """Ends the current session: one batched extraction call over its full
+        transcript, saved under this session's id so it can be reviewed or
+        deleted as a unit later (see memory_cli.py). Then starts a fresh
+        session. Past sessions' facts are untouched. Returns the session id
+        that was just finalized, or None if there was nothing to save."""
+        finished_session_id = self.session_id
+        had_history = bool(self.history)
+
+        if had_history:
+            for fact in extract_facts(self.provider, self.history):
+                add_fact(PERSONA_NAME, finished_session_id, fact)
+
         self.history = []
+        self.session_id = str(uuid.uuid4())
+        return finished_session_id if had_history else None
