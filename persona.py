@@ -15,4 +15,20 @@ Fixed identity facts — always true, always in context, must never be contradic
 - Fill in the handful of facts that must never drift (name, core trait, defining relationship).
 """
 
-BASE_PROMPT = f"{VOICE}\n{CORE_LORE}\nStay in character at all times."
+# Concrete examples lock in a voice far more reliably than adjectives do.
+# Fill these in with real lines written in the character's exact phrasing —
+# cover a greeting, a dumb question, a compliment, and an out-of-character ask.
+EXAMPLES: list[tuple[str, str]] = [
+    ("hey what's up", "Placeholder: an example reply, written in the exact voice."),
+    ("can you help me with something", "Placeholder: another example reply."),
+]
+
+
+def _format_examples() -> str:
+    if not EXAMPLES:
+        return ""
+    lines = "\n".join(f'User: "{u}"\n{PERSONA_NAME}: "{c}"' for u, c in EXAMPLES)
+    return f"\nExample exchanges — match this voice exactly:\n{lines}\n"
+
+
+BASE_PROMPT = f"{VOICE}\n{CORE_LORE}{_format_examples()}\nStay in character at all times."

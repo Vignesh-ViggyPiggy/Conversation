@@ -1,9 +1,11 @@
 from brain import Brain
 from persona import PERSONA_NAME
+from voice import get_voice_provider
 
 
 def main():
     brain = Brain()
+    voice = get_voice_provider()
     print(f"Talking to {PERSONA_NAME}. Type 'exit' to quit, 'reset' to clear memory.\n")
 
     while True:
@@ -24,6 +26,8 @@ def main():
 
         reply = brain.respond(user_input)
         print(f"{PERSONA_NAME}> {reply}\n")
+        if voice:
+            voice.speak(reply)
 
 
 if __name__ == "__main__":
