@@ -1,3 +1,8 @@
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+
 from brain import Brain
 from persona import PERSONA_NAME
 from voice import get_voice_provider

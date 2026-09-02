@@ -3,7 +3,8 @@ from pathlib import Path
 
 import yaml
 
-CHARACTERS_DIR = Path(__file__).parent / "characters"
+# characters/ lives at the repo root, one level up from lib/
+CHARACTERS_DIR = Path(__file__).parent.parent / "characters"
 
 
 def load(name: str | None = None) -> dict:

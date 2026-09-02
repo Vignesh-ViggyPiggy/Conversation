@@ -8,7 +8,8 @@ import numpy as np
 
 from embeddings import get_embedding_provider
 
-DB_PATH = Path(os.environ.get("MEMORY_DB_PATH", Path(__file__).parent.parent / "memory.db"))
+# memory.db lives at the repo root, two levels up from lib/memory/
+DB_PATH = Path(os.environ.get("MEMORY_DB_PATH", Path(__file__).parent.parent.parent / "memory.db"))
 MIN_SCORE = 0.3
 
 _provider = None

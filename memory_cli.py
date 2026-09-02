@@ -1,5 +1,8 @@
 import argparse
+import os
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
 
 from memory.store import delete_session, get_session_facts, list_sessions
 from persona import PERSONA_NAME
