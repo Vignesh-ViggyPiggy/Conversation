@@ -11,7 +11,10 @@ EXAMPLES: list[tuple[str, str]] = [
 def _format_examples() -> str:
     if not EXAMPLES:
         return ""
-    lines = "\n".join(f'User: "{u}"\n{PERSONA_NAME}: "{c}"' for u, c in EXAMPLES)
+    # No added quoting: example lines may already contain quoted dialogue
+    # of their own (e.g. a character sarcastically quoting a word back),
+    # and wrapping those in another layer of quotes reads as broken.
+    lines = "\n".join(f"User: {u}\n{PERSONA_NAME}: {c}" for u, c in EXAMPLES)
     return f"\nExample exchanges — match this voice exactly:\n{lines}\n"
 
 
