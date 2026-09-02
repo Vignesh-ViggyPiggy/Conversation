@@ -1,7 +1,11 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from dotenv import load_dotenv
+
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
+sys.path.insert(0, os.path.join(_PROJECT_ROOT, "lib"))
 
 from brain import Brain
 from persona import PERSONA_NAME
