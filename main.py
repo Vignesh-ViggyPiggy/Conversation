@@ -18,6 +18,19 @@ VOICE_INPUT = os.environ.get("VOICE_INPUT", "text").lower()
 _idle_seconds_raw = os.environ.get("IDLE_TRIGGER_SECONDS")
 IDLE_TRIGGER_SECONDS = float(_idle_seconds_raw) if _idle_seconds_raw else None
 
+AVATAR_PROVIDER = os.environ.get("AVATAR_PROVIDER", "none").lower()
+
+
+def make_avatar_client():
+    """Returns None unless AVATAR_PROVIDER=vtube_studio. Only
+    ElevenLabsProvider actually uses this -- pyttsx3 has no raw audio to
+    sync mouth movement to."""
+    if AVATAR_PROVIDER != "vtube_studio":
+        return None
+    from avatar import VTubeStudioClient
+
+    return VTubeStudioClient()
+
 
 class InputWatcher:
     """Wraps a blocking zero-arg input function so the main loop can poll
@@ -84,6 +97,7 @@ def make_input_fn():
 def main():
     brain = Brain()
     voice = get_voice_provider()
+    avatar = make_avatar_client()
     get_input = make_input_fn()
     watcher = InputWatcher(get_input) if IDLE_TRIGGER_SECONDS else None
 
@@ -102,7 +116,7 @@ def main():
                         reply = brain.idle_response()
                         print(f"{PERSONA_NAME}> {reply}\n")
                         if voice:
-                            voice.speak(reply)
+                            voice.speak(reply, avatar=avatar)
                         continue
                 else:
                     user_input = get_input()
@@ -125,11 +139,13 @@ def main():
             reply = brain.respond(user_input)
             print(f"{PERSONA_NAME}> {reply}\n")
             if voice:
-                voice.speak(reply)
+                voice.speak(reply, avatar=avatar)
     finally:
         finished = brain.reset()
         if finished:
             print(f"Session {finished} saved. Use memory_cli.py to review or delete it.")
+        if avatar:
+            avatar.close()
 
 
 if __name__ == "__main__":
