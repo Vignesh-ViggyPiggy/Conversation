@@ -70,6 +70,11 @@ loader.load(
     const vrm = gltf.userData.vrm;
     VRMUtils.removeUnnecessaryVertices(gltf.scene);
     VRMUtils.removeUnnecessaryJoints(gltf.scene);
+    // VRM 0.x models face -Z while three-vrm/glTF conventions expect +Z,
+    // so they render facing away from the camera unless corrected. This
+    // detects the VRM version and only rotates if it's actually 0.x, so
+    // it's safe to leave in even after switching to a VRM 1.0 model.
+    VRMUtils.rotateVRM0(vrm);
     scene.add(vrm.scene);
     currentVrm = vrm;
     console.log("Loaded VRM:", vrm);
