@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(_PROJECT_ROOT, "lib"))
 
 from brain import Brain
 from persona import PERSONA_NAME
-from voice import get_voice_provider
+from voice import get_voice_provider, strip_narration
 
 VOICE_INPUT = os.environ.get("VOICE_INPUT", "text").lower()
 
@@ -22,11 +22,9 @@ AVATAR_PROVIDER = os.environ.get("AVATAR_PROVIDER", "none").lower()
 
 
 def make_avatar_client():
-    """Returns None unless AVATAR_PROVIDER is set. Only ElevenLabsProvider
-    actually uses this -- pyttsx3 has no raw audio to sync mouth movement
-    to. "vtube_studio" drives an existing VTube Studio instance;
-    "local_scene" runs the local server that avatar_scene/index.html
-    connects to instead."""
+    """Returns None unless AVATAR_PROVIDER is set. "vtube_studio" drives an
+    existing VTube Studio instance; "local_scene" runs the local server
+    that avatar_scene/index.html connects to instead."""
     if AVATAR_PROVIDER == "vtube_studio":
         from avatar import VTubeStudioProvider
 
@@ -122,7 +120,9 @@ def main():
                         reply = brain.idle_response()
                         print(f"{PERSONA_NAME}> {reply}\n")
                         if voice:
-                            voice.speak(reply, avatar=avatar)
+                            spoken = strip_narration(reply)
+                            if spoken:
+                                voice.speak(spoken, avatar=avatar)
                         continue
                 else:
                     user_input = get_input()
@@ -145,7 +145,9 @@ def main():
             reply = brain.respond(user_input)
             print(f"{PERSONA_NAME}> {reply}\n")
             if voice:
-                voice.speak(reply, avatar=avatar)
+                spoken = strip_narration(reply)
+                if spoken:
+                    voice.speak(spoken, avatar=avatar)
     finally:
         finished = brain.reset()
         if finished:

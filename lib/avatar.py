@@ -145,6 +145,21 @@ class LocalSceneProvider(AvatarProvider):
         asyncio.run_coroutine_threadsafe(self._broadcast(message), self._loop)
 
     def close(self) -> None:
+        """Closes the server's listening socket and waits for it to finish
+        before stopping the loop -- stopping the loop first (the previous
+        behavior) tore down the pending connection-accept task mid-flight,
+        producing a "Task was destroyed but it is pending!" warning."""
+
+        async def shutdown():
+            if self._server is not None:
+                self._server.close()
+                await self._server.wait_closed()
+
+        future = asyncio.run_coroutine_threadsafe(shutdown(), self._loop)
+        try:
+            future.result(timeout=2)
+        except Exception:
+            pass
         self._loop.call_soon_threadsafe(self._loop.stop)
 
 

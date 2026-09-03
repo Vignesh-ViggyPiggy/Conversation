@@ -1,6 +1,19 @@
 import os
+import re
 import threading
 from abc import ABC, abstractmethod
+
+_NARRATION_PATTERN = re.compile(r"\*[^*]*\*")
+
+
+def strip_narration(text: str) -> str:
+    """Removes *action/narration* segments so TTS only speaks actual
+    dialogue. The full text (narration included) still gets printed and
+    kept in conversation history -- this only filters what's spoken."""
+    cleaned = _NARRATION_PATTERN.sub("", text)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n\s*\n+", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 class VoiceProvider(ABC):
