@@ -6,6 +6,8 @@ from memory.extractor import extract_facts
 from memory.store import add_fact, format_facts, search_facts
 from persona import BASE_PROMPT, PERSONA_NAME
 
+IDLE_PROMPT = "[Nothing has been said in a while. Break the silence by saying something in character.]"
+
 
 class Brain:
     """Persona + working memory + LLM call, plus persistent memory across sessions."""
@@ -30,6 +32,13 @@ class Brain:
         reply = self.provider.chat(system_prompt, self.history)
         self.history.append({"role": "assistant", "content": reply})
         return reply
+
+    def idle_response(self) -> str:
+        """Self-initiated response to fill silence, reusing respond() as-is
+        (same persona/lore/memory pipeline) with a synthetic prompt instead
+        of real user text. The prompt still lands in history, so later
+        replies can coherently reference "you went quiet earlier"."""
+        return self.respond(IDLE_PROMPT)
 
     def reset(self) -> str | None:
         """Ends the current session: one batched extraction call over its full

@@ -1,5 +1,7 @@
 import os
+import queue
 import sys
+import threading
 
 from dotenv import load_dotenv
 
@@ -12,6 +14,46 @@ from persona import PERSONA_NAME
 from voice import get_voice_provider
 
 VOICE_INPUT = os.environ.get("VOICE_INPUT", "text").lower()
+
+_idle_seconds_raw = os.environ.get("IDLE_TRIGGER_SECONDS")
+IDLE_TRIGGER_SECONDS = float(_idle_seconds_raw) if _idle_seconds_raw else None
+
+
+class InputWatcher:
+    """Wraps a blocking zero-arg input function so the main loop can poll
+    for a result with a timeout instead of blocking forever -- used to
+    detect "nothing happened in N seconds" for the idle trigger, without
+    ever having two threads reading input at once. Only one read is ever
+    in flight: a timed-out poll re-checks the *same* pending read; a new
+    thread only starts once that read actually completes."""
+
+    _EOF = object()
+
+    def __init__(self, input_fn):
+        self._input_fn = input_fn
+        self._queue: queue.Queue = queue.Queue()
+        self._start_thread()
+
+    def _start_thread(self):
+        def worker():
+            try:
+                self._queue.put(self._input_fn())
+            except EOFError:
+                self._queue.put(InputWatcher._EOF)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def get(self, timeout: float) -> str | None:
+        """Returns the next input within `timeout` seconds, or None if
+        nothing arrived yet. Raises EOFError if the input source hit EOF."""
+        try:
+            result = self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+        if result is InputWatcher._EOF:
+            raise EOFError
+        self._start_thread()
+        return result
 
 
 def make_input_fn():
@@ -43,6 +85,7 @@ def main():
     brain = Brain()
     voice = get_voice_provider()
     get_input = make_input_fn()
+    watcher = InputWatcher(get_input) if IDLE_TRIGGER_SECONDS else None
 
     print(f"Talking to {PERSONA_NAME}. Session {brain.session_id}.")
     if VOICE_INPUT == "push_to_talk":
@@ -53,7 +96,16 @@ def main():
     try:
         while True:
             try:
-                user_input = get_input()
+                if watcher:
+                    user_input = watcher.get(timeout=IDLE_TRIGGER_SECONDS)
+                    if user_input is None:
+                        reply = brain.idle_response()
+                        print(f"{PERSONA_NAME}> {reply}\n")
+                        if voice:
+                            voice.speak(reply)
+                        continue
+                else:
+                    user_input = get_input()
             except (EOFError, KeyboardInterrupt):
                 print()
                 break
