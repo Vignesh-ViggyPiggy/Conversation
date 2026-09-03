@@ -59,25 +59,28 @@ class LocalVoiceProvider(VoiceProvider):
     access to the waveform at all, but rendering to a file first means the
     same raw samples can be played via sounddevice and, when an avatar is
     passed, analyzed for lip-sync -- same as ElevenLabsProvider, just
-    fully local and free instead of needing an API key or usage quota."""
+    fully local and free instead of needing an API key or usage quota.
 
-    def __init__(self):
-        import pyttsx3
-
-        self.engine = pyttsx3.init()
+    A fresh engine is created per speak() call rather than reused --
+    pyttsx3's runAndWait() is documented to work reliably only once per
+    engine instance; reusing one across calls can silently produce no
+    audio, or hang outright, on the second and later calls."""
 
     def speak(self, text: str, avatar=None) -> None:
         import tempfile
         import wave
 
         import numpy as np
+        import pyttsx3
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             tmp_path = tmp.name
 
         try:
-            self.engine.save_to_file(text, tmp_path)
-            self.engine.runAndWait()
+            engine = pyttsx3.init()
+            engine.save_to_file(text, tmp_path)
+            engine.runAndWait()
+            engine.stop()
 
             with wave.open(tmp_path, "rb") as wf:
                 sample_rate = wf.getframerate()
