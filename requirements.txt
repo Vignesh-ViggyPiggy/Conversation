@@ -14,3 +14,12 @@ elevenlabs>=1.9.0
 # local pulls in torch via sentence-transformers — heavy (~1-2GB) but free/offline.
 # openai reuses the openai package already listed above — needs OPENAI_API_KEY.
 sentence-transformers>=3.0.0
+
+# needed only for VOICE_INPUT=push_to_talk
+sounddevice>=0.4.6
+keyboard>=0.13.5
+
+# pick the one matching STT_PROVIDER — local uses faster-whisper (offline/free,
+# lighter than full Whisper since it doesn't need torch), openai needs OPENAI_API_KEY
+# and reuses the openai package already listed above.
+faster-whisper>=1.0.0
