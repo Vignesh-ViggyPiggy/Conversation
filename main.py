@@ -22,14 +22,20 @@ AVATAR_PROVIDER = os.environ.get("AVATAR_PROVIDER", "none").lower()
 
 
 def make_avatar_client():
-    """Returns None unless AVATAR_PROVIDER=vtube_studio. Only
-    ElevenLabsProvider actually uses this -- pyttsx3 has no raw audio to
-    sync mouth movement to."""
-    if AVATAR_PROVIDER != "vtube_studio":
-        return None
-    from avatar import VTubeStudioClient
+    """Returns None unless AVATAR_PROVIDER is set. Only ElevenLabsProvider
+    actually uses this -- pyttsx3 has no raw audio to sync mouth movement
+    to. "vtube_studio" drives an existing VTube Studio instance;
+    "local_scene" runs the local server that avatar_scene/index.html
+    connects to instead."""
+    if AVATAR_PROVIDER == "vtube_studio":
+        from avatar import VTubeStudioProvider
 
-    return VTubeStudioClient()
+        return VTubeStudioProvider()
+    if AVATAR_PROVIDER == "local_scene":
+        from avatar import LocalSceneProvider
+
+        return LocalSceneProvider()
+    return None
 
 
 class InputWatcher:

@@ -1,10 +1,23 @@
+import asyncio
 import json
 import os
+import threading
 import time
 import uuid
+from abc import ABC, abstractmethod
 from pathlib import Path
 
 import numpy as np
+
+
+class AvatarProvider(ABC):
+    @abstractmethod
+    def set_mouth_open(self, value: float) -> None:
+        ...
+
+    def close(self) -> None:
+        pass
+
 
 VTS_WS_URL = os.environ.get("VTS_WS_URL", "ws://localhost:8001")
 PLUGIN_NAME = "Conversation Character Brain"
@@ -12,7 +25,7 @@ PLUGIN_DEVELOPER = "local"
 TOKEN_PATH = Path(os.environ.get("VTS_TOKEN_PATH", Path(__file__).parent.parent / ".vts_token"))
 
 
-class VTubeStudioClient:
+class VTubeStudioProvider(AvatarProvider):
     """Minimal VTube Studio API client: auth handshake + parameter
     injection, enough to drive mouth-open from audio amplitude. See
     https://github.com/DenchiSoft/VTubeStudio for the full API."""
@@ -74,6 +87,67 @@ class VTubeStudioClient:
         self.ws.close()
 
 
+class LocalSceneProvider(AvatarProvider):
+    """Runs a local WebSocket server that avatar_scene/index.html connects
+    to, broadcasting mouth-open values to every connected browser client.
+    This is the counterpart to VTubeStudioProvider for the custom
+    Three.js/three-vrm scene -- no external app, no auth handshake, we own
+    both ends. Runs its own asyncio loop in a background thread so the
+    rest of this synchronous codebase doesn't need to become async."""
+
+    def __init__(self, host: str | None = None, port: int | None = None):
+        import websockets
+
+        self.host = host or os.environ.get("AVATAR_SCENE_HOST", "localhost")
+        self.port = port or int(os.environ.get("AVATAR_SCENE_PORT", "9001"))
+        self._clients: set = set()
+        self._loop = asyncio.new_event_loop()
+        self._server = None
+        ready = threading.Event()
+
+        self._thread = threading.Thread(
+            target=self._run_loop, args=(websockets, ready), daemon=True
+        )
+        self._thread.start()
+        if not ready.wait(timeout=5):
+            raise RuntimeError(f"Avatar scene server failed to start on {self.host}:{self.port}")
+        print(f"Avatar scene server listening on ws://{self.host}:{self.port}")
+
+    def _run_loop(self, websockets, ready: threading.Event) -> None:
+        asyncio.set_event_loop(self._loop)
+
+        async def handler(websocket):
+            self._clients.add(websocket)
+            try:
+                async for _ in websocket:
+                    pass  # this server only broadcasts, it doesn't need to read
+            finally:
+                self._clients.discard(websocket)
+
+        async def start():
+            self._server = await websockets.serve(handler, self.host, self.port)
+            ready.set()
+
+        self._loop.run_until_complete(start())
+        self._loop.run_forever()
+
+    async def _broadcast(self, message: str) -> None:
+        if not self._clients:
+            return
+        await asyncio.gather(
+            *(client.send(message) for client in list(self._clients)),
+            return_exceptions=True,
+        )
+
+    def set_mouth_open(self, value: float) -> None:
+        value = max(0.0, min(1.0, value))
+        message = json.dumps({"type": "mouth", "value": value})
+        asyncio.run_coroutine_threadsafe(self._broadcast(message), self._loop)
+
+    def close(self) -> None:
+        self._loop.call_soon_threadsafe(self._loop.stop)
+
+
 def amplitude_windows(audio: np.ndarray, sample_rate: int, window_ms: float = 50.0) -> list[float]:
     """Splits audio into window_ms chunks and returns a 0-1 mouth-open value
     per chunk, based on RMS amplitude normalized against this clip's own
@@ -97,7 +171,7 @@ def amplitude_windows(audio: np.ndarray, sample_rate: int, window_ms: float = 50
 
 
 def animate_mouth_from_audio(
-    client: VTubeStudioClient, audio: np.ndarray, sample_rate: int, window_ms: float = 50.0
+    provider: AvatarProvider, audio: np.ndarray, sample_rate: int, window_ms: float = 50.0
 ) -> None:
     """Streams mouth-open values timed to match audio playback. Meant to
     run in a background thread alongside actual audio playback so the two
@@ -105,6 +179,6 @@ def animate_mouth_from_audio(
     levels = amplitude_windows(audio, sample_rate, window_ms)
     interval = window_ms / 1000.0
     for level in levels:
-        client.set_mouth_open(level)
+        provider.set_mouth_open(level)
         time.sleep(interval)
-    client.set_mouth_open(0.0)
+    provider.set_mouth_open(0.0)

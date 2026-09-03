@@ -4,3 +4,4 @@ __pycache__/
 venv/
 memory.db
 .vts_token
+avatar_scene/models/*.vrm

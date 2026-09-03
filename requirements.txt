@@ -29,3 +29,6 @@ faster-whisper>=1.0.0
 
 # needed only for AVATAR_PROVIDER=vtube_studio
 websocket-client>=1.8.0
+
+# needed only for AVATAR_PROVIDER=local_scene (avatar_scene/index.html)
+websockets>=12.0
