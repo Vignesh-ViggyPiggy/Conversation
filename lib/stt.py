@@ -14,13 +14,21 @@ class STTProvider(ABC):
 
 class LocalSTTProvider(STTProvider):
     """Offline transcription via faster-whisper. No API key; first call
-    downloads the model."""
+    downloads the model.
 
-    def __init__(self, model_size: str | None = None):
+    Defaults to CPU: faster-whisper's "auto" device detection will try CUDA
+    if an NVIDIA GPU is present, but that needs a separately-installed
+    CUDA + cuBLAS runtime that most machines don't have even with working
+    GPU drivers (e.g. Ollama uses its own bundled runtime, not a system
+    one) -- so "auto" fails with a missing-DLL error on a lot of setups.
+    CPU is fast enough for short push-to-talk clips regardless."""
+
+    def __init__(self, model_size: str | None = None, device: str | None = None):
         from faster_whisper import WhisperModel
 
         size = model_size or os.environ.get("STT_MODEL", "base.en")
-        self.model = WhisperModel(size, compute_type="int8")
+        device = device or os.environ.get("STT_DEVICE", "cpu")
+        self.model = WhisperModel(size, device=device, compute_type="int8")
 
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
         segments, _ = self.model.transcribe(audio, language="en")
