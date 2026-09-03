@@ -6,16 +6,47 @@ from abc import ABC, abstractmethod
 class VoiceProvider(ABC):
     @abstractmethod
     def speak(self, text: str, avatar=None) -> None:
-        """Synthesize and play text as audio. If `avatar` (a
-        VTubeStudioClient) is given and this provider can expose raw audio,
+        """Synthesize and play text as audio. If `avatar` (an
+        AvatarProvider) is given and this provider can expose raw audio,
         mouth movement is streamed in sync with playback."""
         ...
 
 
+def _play_with_avatar_sync(samples, sample_rate: int, avatar) -> None:
+    """Plays `samples` (float32, mono, in [-1, 1]) via sounddevice, and,
+    if `avatar` is given, runs amplitude-based lip-sync in a background
+    thread timed to match. Shared by every provider that can expose raw
+    audio -- currently both of them."""
+    import sounddevice as sd
+
+    lipsync_thread = None
+    if avatar is not None:
+        from avatar import animate_mouth_from_audio
+
+        lipsync_thread = threading.Thread(
+            target=animate_mouth_from_audio,
+            args=(avatar, samples, sample_rate),
+            daemon=True,
+        )
+        lipsync_thread.start()
+
+    sd.play(samples, samplerate=sample_rate)
+    sd.wait()
+    if lipsync_thread is not None:
+        lipsync_thread.join(timeout=1)
+
+
 class LocalVoiceProvider(VoiceProvider):
-    """Offline TTS via pyttsx3 (system voices). Zero setup, no API key,
-    robotic quality. Does not support avatar lip-sync -- pyttsx3 calls the
-    OS speech engine directly and never exposes raw audio to analyze."""
+    """Offline TTS via pyttsx3 (system voices: SAPI5 on Windows,
+    NSSpeechSynthesizer on macOS, espeak on Linux). Zero setup, no API key,
+    robotic quality, no usage limits.
+
+    Renders to a temp WAV file (pyttsx3's save_to_file) instead of
+    speaking directly through the engine -- speaking directly gives no
+    access to the waveform at all, but rendering to a file first means the
+    same raw samples can be played via sounddevice and, when an avatar is
+    passed, analyzed for lip-sync -- same as ElevenLabsProvider, just
+    fully local and free instead of needing an API key or usage quota."""
 
     def __init__(self):
         import pyttsx3
@@ -23,8 +54,26 @@ class LocalVoiceProvider(VoiceProvider):
         self.engine = pyttsx3.init()
 
     def speak(self, text: str, avatar=None) -> None:
-        self.engine.say(text)
-        self.engine.runAndWait()
+        import tempfile
+        import wave
+
+        import numpy as np
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            self.engine.save_to_file(text, tmp_path)
+            self.engine.runAndWait()
+
+            with wave.open(tmp_path, "rb") as wf:
+                sample_rate = wf.getframerate()
+                frames = wf.readframes(wf.getnframes())
+        finally:
+            os.remove(tmp_path)
+
+        samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        _play_with_avatar_sync(samples, sample_rate, avatar)
 
 
 class ElevenLabsProvider(VoiceProvider):
@@ -43,7 +92,6 @@ class ElevenLabsProvider(VoiceProvider):
 
     def speak(self, text: str, avatar=None) -> None:
         import numpy as np
-        import sounddevice as sd
 
         audio_chunks = self.client.text_to_speech.convert(
             voice_id=self.voice_id,
@@ -52,22 +100,7 @@ class ElevenLabsProvider(VoiceProvider):
         )
         audio_bytes = b"".join(audio_chunks)
         samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-
-        lipsync_thread = None
-        if avatar is not None:
-            from avatar import animate_mouth_from_audio
-
-            lipsync_thread = threading.Thread(
-                target=animate_mouth_from_audio,
-                args=(avatar, samples, self.SAMPLE_RATE),
-                daemon=True,
-            )
-            lipsync_thread.start()
-
-        sd.play(samples, samplerate=self.SAMPLE_RATE)
-        sd.wait()
-        if lipsync_thread is not None:
-            lipsync_thread.join(timeout=1)
+        _play_with_avatar_sync(samples, self.SAMPLE_RATE, avatar)
 
 
 def get_voice_provider() -> VoiceProvider | None:

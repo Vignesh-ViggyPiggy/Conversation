@@ -15,7 +15,7 @@ elevenlabs>=1.9.0
 # openai reuses the openai package already listed above — needs OPENAI_API_KEY.
 sentence-transformers>=3.0.0
 
-# needed for VOICE_INPUT=push_to_talk, and also for ElevenLabsProvider's
+# needed for VOICE_INPUT=push_to_talk, and for both voice providers'
 # playback (needed either way to get raw samples for avatar lip-sync)
 sounddevice>=0.4.6
 
