@@ -6,6 +6,19 @@
 <style>
   html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
   canvas { display: block; }
+  #camera-toggle {
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    z-index: 10;
+    font: 12px sans-serif;
+    padding: 4px 10px;
+    background: rgba(0, 0, 0, 0.5);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    border-radius: 4px;
+    cursor: pointer;
+  }
 </style>
 <script type="importmap">
 {
@@ -18,9 +31,11 @@
 </script>
 </head>
 <body>
+<button id="camera-toggle">Enable Camera Control</button>
 <script type="module">
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
 
 // Config via URL query params, e.g.:
@@ -58,6 +73,20 @@ window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// Camera stays fixed by default -- this is the framing meant for actual
+// capture (OBS Browser Source). The button lets you freely orbit/zoom to
+// find a framing you like, then lock it back down once you're happy.
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.2, 0);
+controls.update();
+controls.enabled = false;
+
+const cameraToggleButton = document.getElementById("camera-toggle");
+cameraToggleButton.addEventListener("click", () => {
+  controls.enabled = !controls.enabled;
+  cameraToggleButton.textContent = controls.enabled ? "Lock Camera" : "Enable Camera Control";
 });
 
 let currentVrm = null;
@@ -123,6 +152,7 @@ function animate() {
   if (currentVrm) {
     currentVrm.update(delta);
   }
+  controls.update();
   renderer.render(scene, camera);
 }
 animate();
