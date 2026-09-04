@@ -19,14 +19,6 @@ pyttsx3>=2.90
 kokoro>=0.7.4
 elevenlabs>=1.9.0
 
-# needed only for VOICE_PROVIDER=xtts (local voice cloning). Install
-# "coqui-tts" (the community fork), NOT "TTS" (the original coqui-ai
-# package) -- the original is capped at Python <=3.11 and errors on newer
-# Python. No version pinned here since exact numbers have burned us once
-# already on this project -- confirm `pip install coqui-tts` works on your
-# Python version before relying on it.
-coqui-tts
-
 # pick the one matching EMBEDDING_PROVIDER (used by lore + memory search).
 # local pulls in torch via sentence-transformers — heavy (~1-2GB) but free/offline.
 # openai reuses the openai package already listed above — needs OPENAI_API_KEY.
