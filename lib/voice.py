@@ -122,6 +122,57 @@ class KokoroVoiceProvider(VoiceProvider):
         _play_with_avatar_sync(samples, self.SAMPLE_RATE, avatar)
 
 
+class XTTSVoiceProvider(VoiceProvider):
+    """Local voice cloning via Coqui XTTS v2 (installed as the community
+    fork "coqui-tts", not the original "TTS" package -- the original is
+    capped at Python <=3.11 and errors on newer Python). Clones a voice
+    from a short reference clip instead of using a fixed pretrained voice;
+    requires XTTS_SPEAKER_WAV pointing at that clip.
+
+    Defaults to CPU. Same reasoning as STT_DEVICE elsewhere: a present GPU
+    doesn't guarantee a correctly configured CUDA runtime, and assuming
+    one produced the cublas64_12.dll crash seen earlier with
+    faster-whisper. Set XTTS_DEVICE=cuda only once you've confirmed it
+    actually works on this machine."""
+
+    def __init__(self, speaker_wav: str | None = None, language: str | None = None):
+        from TTS.api import TTS
+
+        device = os.environ.get("XTTS_DEVICE", "cpu")
+        self.tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+        self.speaker_wav = speaker_wav or os.environ.get("XTTS_SPEAKER_WAV")
+        self.language = language or os.environ.get("XTTS_LANGUAGE", "en")
+        if not self.speaker_wav:
+            raise RuntimeError(
+                "XTTS_SPEAKER_WAV must point at a reference audio clip for voice cloning"
+            )
+
+    def speak(self, text: str, avatar=None) -> None:
+        import tempfile
+        import wave
+
+        import numpy as np
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            self.tts.tts_to_file(
+                text=text,
+                file_path=tmp_path,
+                speaker_wav=self.speaker_wav,
+                language=self.language,
+            )
+            with wave.open(tmp_path, "rb") as wf:
+                sample_rate = wf.getframerate()
+                frames = wf.readframes(wf.getnframes())
+        finally:
+            os.remove(tmp_path)
+
+        samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        _play_with_avatar_sync(samples, sample_rate, avatar)
+
+
 class ElevenLabsProvider(VoiceProvider):
     """Hosted TTS via ElevenLabs. Needs an API key and a chosen or cloned
     voice_id. Requests raw PCM (rather than mp3) so the samples can be
@@ -156,6 +207,8 @@ def get_voice_provider() -> VoiceProvider | None:
         return LocalVoiceProvider()
     if provider == "kokoro":
         return KokoroVoiceProvider()
+    if provider == "xtts":
+        return XTTSVoiceProvider()
     if provider == "elevenlabs":
         return ElevenLabsProvider()
     return None
