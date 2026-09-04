@@ -20,8 +20,12 @@ kokoro>=0.7.4
 elevenlabs>=1.9.0
 
 # needed only if RVC_MODEL_PATH is set (wraps any VOICE_PROVIDER's output
-# with a trained RVC voice pack). No version pinned -- same reasoning as
-# coqui-tts above, confirm it installs on your Python version first.
+# with a trained RVC voice pack). CONFIRMED BROKEN on Python 3.13: it
+# depends on fairseq==0.12.2 and pins numpy<=1.25.3, neither of which has
+# a working build on 3.13 (numpy 1.25.x needs old setuptools/pkg_resources
+# APIs Python removed in 3.12+). Needs a separate Python 3.10-3.12
+# environment for the inference side -- this line is aspirational until
+# that's set up, not something that currently installs here.
 rvc-python
 
 # pick the one matching EMBEDDING_PROVIDER (used by lore + memory search).
@@ -46,3 +50,8 @@ websocket-client>=1.8.0
 
 # needed only for AVATAR_PROVIDER=local_scene (avatar_scene/index.html)
 websockets>=12.0
+
+# needed only for tools/prepare_voice_dataset.py -- not used by the live
+# app. Confirmed working on Python 3.13 (unlike several packages above).
+pedalboard>=0.9.0
+soundfile>=0.12.0
