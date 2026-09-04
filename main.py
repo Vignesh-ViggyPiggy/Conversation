@@ -2,7 +2,6 @@ import os
 import queue
 import sys
 import threading
-import time
 
 from dotenv import load_dotenv
 
@@ -12,7 +11,6 @@ sys.path.insert(0, os.path.join(_PROJECT_ROOT, "lib"))
 
 from brain import Brain
 from persona import PERSONA_NAME
-from timing import log as log_timing
 from voice import get_voice_provider, strip_narration
 
 VOICE_INPUT = os.environ.get("VOICE_INPUT", "text").lower()
@@ -119,16 +117,12 @@ def main():
                 if watcher:
                     user_input = watcher.get(timeout=IDLE_TRIGGER_SECONDS)
                     if user_input is None:
-                        t0 = time.perf_counter()
                         reply = brain.idle_response()
-                        log_timing("brain.idle_response total", t0)
                         print(f"{PERSONA_NAME}> {reply}\n")
                         if voice:
                             spoken = strip_narration(reply)
                             if spoken:
-                                t0 = time.perf_counter()
                                 voice.speak(spoken, avatar=avatar)
-                                log_timing("voice.speak", t0)
                         continue
                 else:
                     user_input = get_input()
@@ -148,16 +142,12 @@ def main():
                     print("(nothing to save, memory reset)\n")
                 continue
 
-            t0 = time.perf_counter()
             reply = brain.respond(user_input)
-            log_timing("brain.respond total", t0)
             print(f"{PERSONA_NAME}> {reply}\n")
             if voice:
                 spoken = strip_narration(reply)
                 if spoken:
-                    t0 = time.perf_counter()
                     voice.speak(spoken, avatar=avatar)
-                    log_timing("voice.speak", t0)
     finally:
         finished = brain.reset()
         if finished:
