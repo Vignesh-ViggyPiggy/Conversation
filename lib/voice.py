@@ -16,20 +16,10 @@ def strip_narration(text: str) -> str:
     return cleaned.strip()
 
 
-class VoiceProvider(ABC):
-    @abstractmethod
-    def speak(self, text: str, avatar=None) -> None:
-        """Synthesize and play text as audio. If `avatar` (an
-        AvatarProvider) is given and this provider can expose raw audio,
-        mouth movement is streamed in sync with playback."""
-        ...
-
-
 def _play_with_avatar_sync(samples, sample_rate: int, avatar) -> None:
     """Plays `samples` (float32, mono, in [-1, 1]) via sounddevice, and,
     if `avatar` is given, runs amplitude-based lip-sync in a background
-    thread timed to match. Shared by every provider that can expose raw
-    audio -- currently both of them."""
+    thread timed to match. Shared by every provider via VoiceProvider.speak()."""
     import sounddevice as sd
 
     lipsync_thread = None
@@ -49,6 +39,23 @@ def _play_with_avatar_sync(samples, sample_rate: int, avatar) -> None:
         lipsync_thread.join(timeout=1)
 
 
+class VoiceProvider(ABC):
+    @abstractmethod
+    def _synthesize(self, text: str):
+        """Returns (samples, sample_rate) -- float32 mono samples in
+        [-1, 1] -- without playing them. Subclasses implement this;
+        speak() below handles playback uniformly so wrapper providers
+        (like RVCVoiceProvider) can intercept the samples in between."""
+        ...
+
+    def speak(self, text: str, avatar=None) -> None:
+        """Synthesize and play text as audio. If `avatar` (an
+        AvatarProvider) is given, mouth movement is streamed in sync
+        with playback."""
+        samples, sample_rate = self._synthesize(text)
+        _play_with_avatar_sync(samples, sample_rate, avatar)
+
+
 class LocalVoiceProvider(VoiceProvider):
     """Offline TTS via pyttsx3 (system voices: SAPI5 on Windows,
     NSSpeechSynthesizer on macOS, espeak on Linux). Zero setup, no API key,
@@ -58,15 +65,15 @@ class LocalVoiceProvider(VoiceProvider):
     speaking directly through the engine -- speaking directly gives no
     access to the waveform at all, but rendering to a file first means the
     same raw samples can be played via sounddevice and, when an avatar is
-    passed, analyzed for lip-sync -- same as ElevenLabsProvider, just
+    passed, analyzed for lip-sync -- same as the other providers, just
     fully local and free instead of needing an API key or usage quota.
 
-    A fresh engine is created per speak() call rather than reused --
-    pyttsx3's runAndWait() is documented to work reliably only once per
-    engine instance; reusing one across calls can silently produce no
-    audio, or hang outright, on the second and later calls."""
+    A fresh engine is created per call rather than reused -- pyttsx3's
+    runAndWait() is documented to work reliably only once per engine
+    instance; reusing one across calls can silently produce no audio, or
+    hang outright, on the second and later calls."""
 
-    def speak(self, text: str, avatar=None) -> None:
+    def _synthesize(self, text: str):
         import tempfile
         import wave
 
@@ -89,7 +96,7 @@ class LocalVoiceProvider(VoiceProvider):
             os.remove(tmp_path)
 
         samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-        _play_with_avatar_sync(samples, sample_rate, avatar)
+        return samples, sample_rate
 
 
 class KokoroVoiceProvider(VoiceProvider):
@@ -106,7 +113,7 @@ class KokoroVoiceProvider(VoiceProvider):
         self.pipeline = KPipeline(lang_code=lang_code or os.environ.get("KOKORO_LANG", "a"))
         self.voice = voice or os.environ.get("KOKORO_VOICE", "af_heart")
 
-    def speak(self, text: str, avatar=None) -> None:
+    def _synthesize(self, text: str):
         import numpy as np
 
         chunks = []
@@ -116,10 +123,9 @@ class KokoroVoiceProvider(VoiceProvider):
             chunks.append(np.asarray(audio, dtype=np.float32))
 
         if not chunks:
-            return
+            return np.zeros(0, dtype=np.float32), self.SAMPLE_RATE
 
-        samples = np.concatenate(chunks)
-        _play_with_avatar_sync(samples, self.SAMPLE_RATE, avatar)
+        return np.concatenate(chunks), self.SAMPLE_RATE
 
 
 class ElevenLabsProvider(VoiceProvider):
@@ -136,7 +142,7 @@ class ElevenLabsProvider(VoiceProvider):
         self.client = ElevenLabs(api_key=os.environ.get("ELEVENLABS_API_KEY"))
         self.voice_id = voice_id or os.environ.get("VOICE_ID")
 
-    def speak(self, text: str, avatar=None) -> None:
+    def _synthesize(self, text: str):
         import numpy as np
 
         audio_chunks = self.client.text_to_speech.convert(
@@ -146,16 +152,92 @@ class ElevenLabsProvider(VoiceProvider):
         )
         audio_bytes = b"".join(audio_chunks)
         samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        _play_with_avatar_sync(samples, self.SAMPLE_RATE, avatar)
+        return samples, self.SAMPLE_RATE
+
+
+class RVCVoiceProvider(VoiceProvider):
+    """Wraps a base VoiceProvider's output through a trained RVC voice
+    pack (a small, reusable model file) before playback. A fast base TTS
+    (Kokoro is the intended pairing) generates speech; RVC reshapes the
+    timbre to match a specific trained voice. Lightweight at inference
+    time since the character-specific work happened once, during
+    training (e.g. via Applio) -- unlike full clone-per-call approaches.
+
+    Needs RVC_MODEL_PATH pointing at a trained .pth voice pack. Defaults
+    to CPU for the same reason as STT_DEVICE/XTTS_DEVICE elsewhere: a
+    present GPU doesn't guarantee a correctly configured CUDA setup."""
+
+    def __init__(
+        self,
+        base_provider: VoiceProvider,
+        model_path: str | None = None,
+        device: str | None = None,
+    ):
+        from rvc_python.infer import RVCInference
+
+        self.base_provider = base_provider
+        model_path = model_path or os.environ.get("RVC_MODEL_PATH")
+        if not model_path:
+            raise RuntimeError(
+                "RVC_MODEL_PATH must point at a trained RVC voice pack (.pth file)"
+            )
+
+        self.rvc = RVCInference(device=device or os.environ.get("RVC_DEVICE", "cpu"))
+        self.rvc.load_model(model_path)
+
+    def _synthesize(self, text: str):
+        import tempfile
+        import wave
+
+        import numpy as np
+
+        base_samples, base_sample_rate = self.base_provider._synthesize(text)
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as in_tmp:
+            in_path = in_tmp.name
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as out_tmp:
+            out_path = out_tmp.name
+
+        try:
+            pcm16 = (np.clip(base_samples, -1.0, 1.0) * 32767).astype(np.int16)
+            with wave.open(in_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(base_sample_rate)
+                wf.writeframes(pcm16.tobytes())
+
+            self.rvc.infer_file(input_path=in_path, output_path=out_path)
+
+            with wave.open(out_path, "rb") as wf:
+                sample_rate = wf.getframerate()
+                frames = wf.readframes(wf.getnframes())
+        finally:
+            os.remove(in_path)
+            os.remove(out_path)
+
+        samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        return samples, sample_rate
 
 
 def get_voice_provider() -> VoiceProvider | None:
-    """Returns None (text-only) unless VOICE_PROVIDER is explicitly set."""
+    """Returns None (text-only) unless VOICE_PROVIDER is explicitly set.
+    RVC_MODEL_PATH, if set, wraps whichever base provider was selected in
+    RVCVoiceProvider -- it's an optional layer on top of any of the three,
+    not a separate VOICE_PROVIDER value of its own."""
     provider = os.environ.get("VOICE_PROVIDER", "none").lower()
     if provider == "local":
-        return LocalVoiceProvider()
-    if provider == "kokoro":
-        return KokoroVoiceProvider()
-    if provider == "elevenlabs":
-        return ElevenLabsProvider()
-    return None
+        base: VoiceProvider | None = LocalVoiceProvider()
+    elif provider == "kokoro":
+        base = KokoroVoiceProvider()
+    elif provider == "elevenlabs":
+        base = ElevenLabsProvider()
+    else:
+        base = None
+
+    if base is None:
+        return None
+
+    rvc_model_path = os.environ.get("RVC_MODEL_PATH")
+    if rvc_model_path:
+        return RVCVoiceProvider(base, model_path=rvc_model_path)
+    return base

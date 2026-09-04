@@ -19,6 +19,11 @@ pyttsx3>=2.90
 kokoro>=0.7.4
 elevenlabs>=1.9.0
 
+# needed only if RVC_MODEL_PATH is set (wraps any VOICE_PROVIDER's output
+# with a trained RVC voice pack). No version pinned -- same reasoning as
+# coqui-tts above, confirm it installs on your Python version first.
+rvc-python
+
 # pick the one matching EMBEDDING_PROVIDER (used by lore + memory search).
 # local pulls in torch via sentence-transformers — heavy (~1-2GB) but free/offline.
 # openai reuses the openai package already listed above — needs OPENAI_API_KEY.
