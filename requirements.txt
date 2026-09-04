@@ -50,8 +50,3 @@ websocket-client>=1.8.0
 
 # needed only for AVATAR_PROVIDER=local_scene (avatar_scene/index.html)
 websockets>=12.0
-
-# needed only for tools/prepare_voice_dataset.py -- not used by the live
-# app. Confirmed working on Python 3.13 (unlike several packages above).
-pedalboard>=0.9.0
-soundfile>=0.12.0
