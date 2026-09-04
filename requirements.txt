@@ -6,8 +6,11 @@ python-dotenv>=1.0.0
 anthropic>=0.40.0
 openai>=1.50.0
 
-# pick the one matching VOICE_PROVIDER — optional, only needed if you want spoken output
+# pick the one matching VOICE_PROVIDER — optional, only needed if you want spoken output.
+# kokoro pulls in torch (already present if EMBEDDING_PROVIDER=local) but is
+# noticeably more natural-sounding than pyttsx3, for free and with no usage limit.
 pyttsx3>=2.90
+kokoro>=0.9.4
 elevenlabs>=1.9.0
 
 # pick the one matching EMBEDDING_PROVIDER (used by lore + memory search).

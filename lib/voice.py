@@ -92,6 +92,36 @@ class LocalVoiceProvider(VoiceProvider):
         _play_with_avatar_sync(samples, sample_rate, avatar)
 
 
+class KokoroVoiceProvider(VoiceProvider):
+    """Offline neural TTS via Kokoro-82M. Free (Apache 2.0), no usage
+    limits, noticeably more natural than pyttsx3's OS voices -- better
+    prosody, breath control, and question/statement intonation. Pulls in
+    torch as a dependency (already present if EMBEDDING_PROVIDER=local)."""
+
+    SAMPLE_RATE = 24000
+
+    def __init__(self, voice: str | None = None, lang_code: str | None = None):
+        from kokoro import KPipeline
+
+        self.pipeline = KPipeline(lang_code=lang_code or os.environ.get("KOKORO_LANG", "a"))
+        self.voice = voice or os.environ.get("KOKORO_VOICE", "af_heart")
+
+    def speak(self, text: str, avatar=None) -> None:
+        import numpy as np
+
+        chunks = []
+        for _graphemes, _phonemes, audio in self.pipeline(text, voice=self.voice):
+            if hasattr(audio, "numpy"):
+                audio = audio.numpy()
+            chunks.append(np.asarray(audio, dtype=np.float32))
+
+        if not chunks:
+            return
+
+        samples = np.concatenate(chunks)
+        _play_with_avatar_sync(samples, self.SAMPLE_RATE, avatar)
+
+
 class ElevenLabsProvider(VoiceProvider):
     """Hosted TTS via ElevenLabs. Needs an API key and a chosen or cloned
     voice_id. Requests raw PCM (rather than mp3) so the samples can be
@@ -124,6 +154,8 @@ def get_voice_provider() -> VoiceProvider | None:
     provider = os.environ.get("VOICE_PROVIDER", "none").lower()
     if provider == "local":
         return LocalVoiceProvider()
+    if provider == "kokoro":
+        return KokoroVoiceProvider()
     if provider == "elevenlabs":
         return ElevenLabsProvider()
     return None
