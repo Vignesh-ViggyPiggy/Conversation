@@ -1,7 +1,6 @@
 pyyaml>=6.0
 numpy>=1.24.0
 python-dotenv>=1.0.0
-ftfy>=6.2.0
 
 # pick the one(s) matching BRAIN_PROVIDER — imports are lazy, so you only need what you use
 anthropic>=0.40.0
