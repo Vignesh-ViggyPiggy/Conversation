@@ -1,3 +1,4 @@
+import time
 import uuid
 
 from llm import get_provider
@@ -5,6 +6,7 @@ from lore.retriever import format_for_prompt, search
 from memory.extractor import extract_facts
 from memory.store import add_fact, format_facts, search_facts
 from persona import BASE_PROMPT, PERSONA_NAME
+from timing import log as log_timing
 
 IDLE_PROMPT = "[Nothing has been said in a while. Break the silence by saying something in character.]"
 
@@ -20,8 +22,13 @@ class Brain:
     def respond(self, user_input: str) -> str:
         self.history.append({"role": "user", "content": user_input})
 
+        t0 = time.perf_counter()
         relevant_lore = format_for_prompt(search(user_input))
+        log_timing("lore search", t0)
+
+        t0 = time.perf_counter()
         remembered = format_facts(search_facts(PERSONA_NAME, user_input))
+        log_timing("memory search", t0)
 
         system_prompt = BASE_PROMPT
         if relevant_lore:
@@ -29,7 +36,10 @@ class Brain:
         if remembered:
             system_prompt += f"\n\n{remembered}"
 
+        t0 = time.perf_counter()
         reply = self.provider.chat(system_prompt, self.history)
+        log_timing("llm call", t0)
+
         self.history.append({"role": "assistant", "content": reply})
         return reply
 
