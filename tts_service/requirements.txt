@@ -1,0 +1,7 @@
+# Isolated venv for this service only -- needs Python 3.10 or 3.11.
+# kokoro>=0.8 requires Python <3.13; on 3.10/3.11 it installs from
+# prebuilt wheels with no build-toolchain issues (unlike trying to run
+# it in the main app's Python 3.13 environment).
+kokoro>=0.8.0
+fastapi>=0.110.0
+uvicorn>=0.29.0

@@ -100,32 +100,45 @@ class LocalVoiceProvider(VoiceProvider):
 
 
 class KokoroVoiceProvider(VoiceProvider):
-    """Offline neural TTS via Kokoro-82M. Free (Apache 2.0), no usage
-    limits, noticeably more natural than pyttsx3's OS voices -- better
-    prosody, breath control, and question/statement intonation. Pulls in
-    torch as a dependency (already present if EMBEDDING_PROVIDER=local)."""
+    """Offline neural TTS via Kokoro-82M -- free (Apache 2.0), no usage
+    limits, noticeably more natural than pyttsx3's OS voices. Runs as a
+    separate local HTTP server (see tts_service/) in its own Python
+    3.10/3.11 venv, since kokoro pins numpy exactly and has no prebuilt
+    wheel for this project's Python 3.13 -- same "external local
+    service" treatment already used for Ollama."""
 
-    SAMPLE_RATE = 24000
-
-    def __init__(self, voice: str | None = None, lang_code: str | None = None):
-        from kokoro import KPipeline
-
-        self.pipeline = KPipeline(lang_code=lang_code or os.environ.get("KOKORO_LANG", "a"))
+    def __init__(
+        self,
+        voice: str | None = None,
+        lang_code: str | None = None,
+        server_url: str | None = None,
+    ):
         self.voice = voice or os.environ.get("KOKORO_VOICE", "af_heart")
+        self.lang_code = lang_code or os.environ.get("KOKORO_LANG", "a")
+        self.server_url = (
+            server_url or os.environ.get("KOKORO_SERVER_URL", "http://localhost:8500")
+        ).rstrip("/")
 
     def _synthesize(self, text: str):
+        import io
+        import wave
+
         import numpy as np
+        import requests
 
-        chunks = []
-        for _graphemes, _phonemes, audio in self.pipeline(text, voice=self.voice):
-            if hasattr(audio, "numpy"):
-                audio = audio.numpy()
-            chunks.append(np.asarray(audio, dtype=np.float32))
+        response = requests.post(
+            f"{self.server_url}/synthesize",
+            json={"text": text, "voice": self.voice, "lang_code": self.lang_code},
+            timeout=60,
+        )
+        response.raise_for_status()
 
-        if not chunks:
-            return np.zeros(0, dtype=np.float32), self.SAMPLE_RATE
+        with wave.open(io.BytesIO(response.content), "rb") as wf:
+            sample_rate = wf.getframerate()
+            frames = wf.readframes(wf.getnframes())
 
-        return np.concatenate(chunks), self.SAMPLE_RATE
+        samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        return samples, sample_rate
 
 
 class ElevenLabsProvider(VoiceProvider):
