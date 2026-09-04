@@ -9,8 +9,14 @@ openai>=1.50.0
 # pick the one matching VOICE_PROVIDER — optional, only needed if you want spoken output.
 # kokoro pulls in torch (already present if EMBEDDING_PROVIDER=local) but is
 # noticeably more natural-sounding than pyttsx3, for free and with no usage limit.
+# NOTE: kokoro>=0.8 requires Python <3.13. On Python 3.13, pip falls back to
+# 0.7.16, which pins numpy==1.26.4 exactly -- that has no prebuilt wheel for
+# 3.13, so pip tries to compile numpy from source, which needs GCC 8.4+.
+# If you're on Python 3.13 and don't have a working modern C toolchain, this
+# will fail to install; either use a Python 3.10-3.12 venv for kokoro, or
+# skip it and use "local" (pyttsx3) or "elevenlabs" instead.
 pyttsx3>=2.90
-kokoro>=0.9.4
+kokoro>=0.7.4
 elevenlabs>=1.9.0
 
 # pick the one matching EMBEDDING_PROVIDER (used by lore + memory search).
