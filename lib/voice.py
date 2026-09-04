@@ -99,13 +99,54 @@ class LocalVoiceProvider(VoiceProvider):
         return samples, sample_rate
 
 
+def _iter_stream_frames(response):
+    """Parses tts_service's streaming wire format from a `requests`
+    response opened with stream=True: a 4-byte little-endian sample_rate,
+    then repeated (4-byte little-endian length, PCM16 payload) frames.
+    Yields the sample_rate once as an int, then each frame's decoded
+    float32 samples -- kept separate from playback so the parsing logic
+    is testable without real audio hardware."""
+    import struct
+
+    import numpy as np
+
+    byte_iter = response.iter_content(chunk_size=None)
+    buf = bytearray()
+
+    def read_exact(n):
+        while len(buf) < n:
+            chunk = next(byte_iter, None)
+            if chunk is None:
+                raise EOFError("stream ended before expected data arrived")
+            buf.extend(chunk)
+        result = bytes(buf[:n])
+        del buf[:n]
+        return result
+
+    yield struct.unpack("<I", read_exact(4))[0]
+
+    while True:
+        try:
+            length = struct.unpack("<I", read_exact(4))[0]
+        except EOFError:
+            return
+        payload = read_exact(length)
+        yield np.frombuffer(payload, dtype=np.int16).astype(np.float32) / 32768.0
+
+
 class KokoroVoiceProvider(VoiceProvider):
     """Offline neural TTS via Kokoro-82M -- free (Apache 2.0), no usage
     limits, noticeably more natural than pyttsx3's OS voices. Runs as a
     separate local HTTP server (see tts_service/) in its own Python
     3.10/3.11 venv, since kokoro pins numpy exactly and has no prebuilt
     wheel for this project's Python 3.13 -- same "external local
-    service" treatment already used for Ollama."""
+    service" treatment already used for Ollama.
+
+    speak() streams the reply sentence-by-sentence and starts playback
+    on the first one rather than waiting for the entire reply to finish
+    synthesizing -- without this, a multi-sentence reply's *whole* audio
+    has to be generated before any of it is audible, which is what made
+    TTS start noticeably after the text already appeared."""
 
     def __init__(
         self,
@@ -119,7 +160,48 @@ class KokoroVoiceProvider(VoiceProvider):
             server_url or os.environ.get("KOKORO_SERVER_URL", "http://localhost:8500")
         ).rstrip("/")
 
+    def speak(self, text: str, avatar=None) -> None:
+        import requests
+        import sounddevice as sd
+
+        response = requests.post(
+            f"{self.server_url}/synthesize_stream",
+            json={"text": text, "voice": self.voice, "lang_code": self.lang_code},
+            stream=True,
+            timeout=60,
+        )
+        response.raise_for_status()
+
+        frames = _iter_stream_frames(response)
+        sample_rate = next(frames)
+
+        out_stream = sd.OutputStream(samplerate=sample_rate, channels=1, dtype="float32")
+        out_stream.start()
+        try:
+            for samples in frames:
+                if samples.size == 0:
+                    continue
+                lipsync_thread = None
+                if avatar is not None:
+                    from avatar import animate_mouth_from_audio
+
+                    lipsync_thread = threading.Thread(
+                        target=animate_mouth_from_audio,
+                        args=(avatar, samples, sample_rate),
+                        daemon=True,
+                    )
+                    lipsync_thread.start()
+                out_stream.write(samples.reshape(-1, 1))
+                if lipsync_thread is not None:
+                    lipsync_thread.join(timeout=1)
+        finally:
+            out_stream.stop()
+            out_stream.close()
+
     def _synthesize(self, text: str):
+        # Non-streaming fallback -- used when RVCVoiceProvider wraps this
+        # provider, since RVC's file-based conversion needs a complete
+        # buffer up front anyway, so streaming would gain nothing there.
         import io
         import wave
 

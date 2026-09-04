@@ -15,14 +15,17 @@ main app's .env and VOICE_PROVIDER=kokoro.
 """
 
 import io
+import struct
 import wave
 
 import numpy as np
 from fastapi import FastAPI, Response
+from fastapi.responses import StreamingResponse
 from kokoro import KPipeline
 from pydantic import BaseModel
 
 SAMPLE_RATE = 24000
+DEFAULT_LANG_CODE = "a"
 
 app = FastAPI()
 _pipelines: dict[str, KPipeline] = {}
@@ -42,6 +45,14 @@ def _get_pipeline(lang_code: str) -> KPipeline:
     return _pipelines[lang_code]
 
 
+@app.on_event("startup")
+def _warm_default_pipeline():
+    # Loading model weights on the first real request adds several
+    # seconds to that first reply. Paying that cost once at startup
+    # instead means every actual conversation turn is fast.
+    _get_pipeline(DEFAULT_LANG_CODE)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -49,6 +60,9 @@ def health():
 
 @app.post("/synthesize")
 def synthesize(req: SynthesizeRequest):
+    """Non-streaming: returns one complete WAV file. Used when the full
+    buffer is needed up front (e.g. wrapped by RVCVoiceProvider, which
+    has to hand a whole file to the RVC conversion step anyway)."""
     pipeline = _get_pipeline(req.lang_code)
 
     chunks = []
@@ -68,3 +82,34 @@ def synthesize(req: SynthesizeRequest):
         wf.writeframes(pcm16.tobytes())
 
     return Response(content=buf.getvalue(), media_type="audio/wav")
+
+
+def _stream_pcm_frames(text: str, voice: str, lang_code: str):
+    """Wire format: 4-byte little-endian sample_rate, then repeated
+    (4-byte little-endian length, PCM16 payload) frames -- one frame per
+    chunk kokoro's pipeline yields (roughly one per sentence). Streaming
+    these out as they're generated, instead of waiting for the whole
+    reply to finish synthesizing, is what lets playback start on the
+    first sentence rather than after the entire response."""
+    yield struct.pack("<I", SAMPLE_RATE)
+
+    pipeline = _get_pipeline(lang_code)
+    for _graphemes, _phonemes, audio in pipeline(text, voice=voice):
+        if hasattr(audio, "numpy"):
+            audio = audio.numpy()
+        samples = np.asarray(audio, dtype=np.float32)
+        pcm16 = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
+        payload = pcm16.tobytes()
+        yield struct.pack("<I", len(payload)) + payload
+
+
+@app.post("/synthesize_stream")
+def synthesize_stream(req: SynthesizeRequest):
+    """Streaming variant: the client can start playing the first sentence
+    while later sentences are still being synthesized, instead of
+    waiting for the entire reply. See lib/voice.py's KokoroVoiceProvider
+    for the client side of this wire format."""
+    return StreamingResponse(
+        _stream_pcm_frames(req.text, req.voice, req.lang_code),
+        media_type="application/octet-stream",
+    )
