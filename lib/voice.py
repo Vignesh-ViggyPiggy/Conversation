@@ -3,14 +3,32 @@ import re
 import threading
 from abc import ABC, abstractmethod
 
-_NARRATION_PATTERN = re.compile(r"\*[^*]*\*")
+_ASTERISK_SPAN = re.compile(r"\*([^*]+)\*")
+_EMPHASIS_WORD_LIMIT = 2
 
 
 def strip_narration(text: str) -> str:
-    """Removes *action/narration* segments so TTS only speaks actual
-    dialogue. The full text (narration included) still gets printed and
-    kept in conversation history -- this only filters what's spoken."""
-    cleaned = _NARRATION_PATTERN.sub("", text)
+    """Removes *action/narration* asides so TTS only speaks actual
+    dialogue, while still speaking short *emphasized* words/phrases
+    inline -- the asterisks are dropped but the words stay. The full
+    text (narration included) still gets printed and kept in
+    conversation history -- this only filters what's spoken.
+
+    Distinguishes the two cases by word count: a short span (at most
+    two words, e.g. "that's *true*") reads as emphasis on a word within
+    the character's own line and is kept; a longer span (e.g. "*They
+    lean forward, studying you*") reads as a described action/aside and
+    is dropped entirely, whether it sits on its own line or is embedded
+    mid-sentence. Not foolproof -- a short action ("*shrugs*") could in
+    principle be misread as emphasis -- but it matches this project's
+    actual narration style, which tends to write full descriptive
+    clauses for actions and single words for emphasis."""
+
+    def _replace(match: re.Match) -> str:
+        span = match.group(1)
+        return span if len(span.split()) <= _EMPHASIS_WORD_LIMIT else ""
+
+    cleaned = _ASTERISK_SPAN.sub(_replace, text)
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n\s*\n+", "\n\n", cleaned)
     return cleaned.strip()
