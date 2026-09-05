@@ -100,6 +100,9 @@ def make_input_fn():
 
 def main():
     brain = Brain()
+    print("Warming up the local model...")
+    brain.provider.warm_up()
+
     voice = get_voice_provider()
     avatar = make_avatar_client()
     get_input = make_input_fn()
