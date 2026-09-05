@@ -90,6 +90,16 @@ cameraToggleButton.addEventListener("click", () => {
 });
 
 let currentVrm = null;
+let chestBone = null;
+let chestRestRotationX = 0;
+
+// Idle breathing: a subtle chest-bone rotation on a sine wave, independent
+// of mouth/expression (those are face blendshapes, this is a body bone) --
+// runs continuously regardless of what's being said, so the avatar never
+// looks frozen between lines.
+const BREATH_PERIOD_SECONDS = 4.2;
+const BREATH_AMPLITUDE = 0.025;
+let elapsedTime = 0;
 
 const loader = new GLTFLoader();
 loader.register((parser) => new VRMLoaderPlugin(parser));
@@ -106,6 +116,12 @@ loader.load(
     VRMUtils.rotateVRM0(vrm);
     scene.add(vrm.scene);
     currentVrm = vrm;
+
+    chestBone = vrm.humanoid?.getNormalizedBoneNode("chest") ?? null;
+    if (chestBone) {
+      chestRestRotationX = chestBone.rotation.x;
+    }
+
     console.log("Loaded VRM:", vrm);
   },
   undefined,
@@ -125,8 +141,42 @@ function setMouthOpen(value) {
   }
 }
 
+// Expression control (happy/angry/sad/relaxed/surprised -- VRM 1.0's
+// standard emotion presets). VRM 0.x names these differently and has no
+// "surprised" preset at all, hence the mapping/null-skip below. Only one
+// expression is ever active at a time -- setting a new one clears
+// whichever was active before, rather than letting them blend.
+const VRM1_EXPRESSIONS = new Set(["happy", "angry", "sad", "relaxed", "surprised", "neutral"]);
+const VRM0_EXPRESSION_MAP = { happy: "joy", angry: "angry", sad: "sorrow", relaxed: "fun", surprised: null, neutral: "neutral" };
+let currentExpressionName = null;
+
+function setExpression(name, value) {
+  if (!currentVrm) return;
+  if (currentVrm.expressionManager) {
+    if (currentExpressionName && currentExpressionName !== name) {
+      currentVrm.expressionManager.setValue(currentExpressionName, 0);
+      currentExpressionName = null;
+    }
+    if (VRM1_EXPRESSIONS.has(name)) {
+      currentVrm.expressionManager.setValue(name, value);
+      currentExpressionName = value > 0 ? name : null;
+    }
+  } else if (currentVrm.blendShapeProxy) {
+    const vrm0Name = VRM0_EXPRESSION_MAP[name];
+    if (currentExpressionName && currentExpressionName !== vrm0Name) {
+      currentVrm.blendShapeProxy.setValue(currentExpressionName, 0);
+      currentExpressionName = null;
+    }
+    if (vrm0Name) {
+      currentVrm.blendShapeProxy.setValue(vrm0Name, value);
+      currentExpressionName = value > 0 ? vrm0Name : null;
+    }
+  }
+}
+
 // Connects to the local avatar server (lib/avatar.py's LocalSceneProvider)
-// and applies whatever mouth-open values it broadcasts. Reconnects on
+// and applies whatever it broadcasts -- mouth-open values for lipsync, or
+// expression changes timed to *action* text in a reply. Reconnects on
 // drop, since the Python process may start after this page does.
 function connect() {
   const ws = new WebSocket(WS_URL);
@@ -135,6 +185,8 @@ function connect() {
     const message = JSON.parse(event.data);
     if (message.type === "mouth") {
       setMouthOpen(message.value);
+    } else if (message.type === "expression") {
+      setExpression(message.name, message.value);
     }
   };
   ws.onclose = () => {
@@ -149,7 +201,12 @@ const clock = new THREE.Clock();
 function animate() {
   requestAnimationFrame(animate);
   const delta = clock.getDelta();
+  elapsedTime += delta;
   if (currentVrm) {
+    if (chestBone) {
+      const breath = Math.sin((elapsedTime / BREATH_PERIOD_SECONDS) * Math.PI * 2) * BREATH_AMPLITUDE;
+      chestBone.rotation.x = chestRestRotationX + breath;
+    }
     currentVrm.update(delta);
   }
   controls.update();

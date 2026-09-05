@@ -124,10 +124,8 @@ def main():
                     if user_input is None:
                         reply = brain.idle_response()
                         print(f"{PERSONA_NAME}> {reply}\n")
-                        if voice:
-                            spoken = strip_narration(reply)
-                            if spoken:
-                                voice.speak(spoken, avatar=avatar)
+                        if voice and strip_narration(reply):
+                            voice.speak(reply, avatar=avatar)
                         continue
                 else:
                     user_input = get_input()
@@ -149,10 +147,8 @@ def main():
 
             reply = brain.respond(user_input)
             print(f"{PERSONA_NAME}> {reply}\n")
-            if voice:
-                spoken = strip_narration(reply)
-                if spoken:
-                    voice.speak(spoken, avatar=avatar)
+            if voice and strip_narration(reply):
+                voice.speak(reply, avatar=avatar)
     finally:
         finished = brain.reset()
         if finished:

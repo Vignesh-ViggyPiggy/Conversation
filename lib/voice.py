@@ -8,53 +8,91 @@ _EMPHASIS_WORD_LIMIT = 2
 _SENTENCE_END = re.compile(r"[.!?]\s*$")
 
 
-def strip_narration(text: str) -> str:
-    """Removes *action/narration* asides so TTS only speaks actual
-    dialogue, while still speaking short *emphasized* words/phrases
-    inline -- the asterisks are dropped but the words stay. The full
-    text (narration included) still gets printed and kept in
-    conversation history -- this only filters what's spoken.
+def _is_freestanding(before: str, after: str) -> bool:
+    before_trimmed = before.rstrip()
+    after_trimmed = after.lstrip()
+    starts_clean = not before_trimmed or bool(_SENTENCE_END.search(before_trimmed))
+    ends_clean = not after_trimmed or after_trimmed[0] in ("*",) or after_trimmed[0].isupper()
+    return starts_clean and ends_clean
 
-    A span is treated as an action (dropped) if it's long (more than two
-    words -- "*They lean forward, studying you*") OR if it's freestanding:
-    bounded by a sentence edge on both sides, e.g. "*grins* Welcome back!"
+
+def _normalize_whitespace(text: str) -> str:
+    cleaned = re.sub(r"[ \t]+", " ", text)
+    cleaned = re.sub(r"\n\s*\n+", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def split_speech_segments(text: str) -> list[tuple[str, str]]:
+    """Splits a reply into ("action", ...) and ("dialogue", ...) segments,
+    in order -- e.g. "*grins* Welcome back! *leans in* Tell me everything."
+    becomes [("action", "grins"), ("dialogue", "Welcome back!"),
+    ("action", "leans in"), ("dialogue", "Tell me everything.")]. Lets a
+    caller (see VoiceProvider.speak()) trigger an avatar expression right
+    before speaking the dialogue that follows it, instead of losing the
+    action text entirely.
+
+    A span is treated as an action if it's long (more than two words --
+    "*They lean forward, studying you*") OR if it's freestanding: bounded
+    by a sentence edge on both sides, e.g. "*grins* Welcome back!"
     (nothing before it but start-of-text/a previous sentence ending, and
     a new capitalized sentence right after). Anything else short is
-    treated as inline emphasis and kept -- "That's *true*, you got me."
-    has "true" grammatically woven into the surrounding sentence on both
-    sides, unlike a bracketed action. This matters because short action
-    tags like "*grins*" or "*winks*" are exactly the kind of brief,
-    between-lines flavor this character is meant to use, and a pure
-    word-count rule would misread them as emphasis and speak them
-    literally. Not foolproof -- an action embedded mid-clause without
-    surrounding punctuation could still be misread -- but it matches how
-    this character actually writes actions, always as their own
-    sentence-bounded unit."""
-
-    def _is_freestanding(before: str, after: str) -> bool:
-        before_trimmed = before.rstrip()
-        after_trimmed = after.lstrip()
-        starts_clean = not before_trimmed or bool(_SENTENCE_END.search(before_trimmed))
-        ends_clean = not after_trimmed or after_trimmed[0] in ("*",) or after_trimmed[0].isupper()
-        return starts_clean and ends_clean
-
-    pieces = []
+    treated as inline emphasis and folded into the surrounding dialogue
+    with its asterisks dropped -- "That's *true*, you got me." has "true"
+    grammatically woven into the sentence on both sides, unlike a
+    bracketed action. Not foolproof -- an action embedded mid-clause
+    without surrounding punctuation could still be misread -- but it
+    matches how this character actually writes actions, always as their
+    own sentence-bounded unit."""
+    segments: list[tuple[str, str]] = []
+    buffer: list[str] = []
     last_end = 0
+
+    def flush_dialogue() -> None:
+        nonlocal buffer
+        cleaned = _normalize_whitespace("".join(buffer))
+        if cleaned:
+            segments.append(("dialogue", cleaned))
+        buffer = []
+
     for match in _ASTERISK_SPAN.finditer(text):
         span = match.group(1)
         is_action = len(span.split()) > _EMPHASIS_WORD_LIMIT or _is_freestanding(
             text[:match.start()], text[match.end():]
         )
-        pieces.append(text[last_end:match.start()])
-        if not is_action:
-            pieces.append(span)
+        buffer.append(text[last_end:match.start()])
+        if is_action:
+            flush_dialogue()
+            segments.append(("action", span.strip()))
+        else:
+            buffer.append(span)
         last_end = match.end()
-    pieces.append(text[last_end:])
 
-    cleaned = "".join(pieces)
-    cleaned = re.sub(r"[ \t]+", " ", cleaned)
-    cleaned = re.sub(r"\n\s*\n+", "\n\n", cleaned)
-    return cleaned.strip()
+    buffer.append(text[last_end:])
+    flush_dialogue()
+    return segments
+
+
+def strip_narration(text: str) -> str:
+    """Removes *action/narration* asides so TTS only speaks actual
+    dialogue, while still speaking short *emphasized* words/phrases
+    inline -- the asterisks are dropped but the words stay. The full
+    text (narration included) still gets printed and kept in
+    conversation history -- this only filters what's spoken. See
+    split_speech_segments() for the action-vs-emphasis rule (shared with
+    this function) -- unlike that function, this one removes actions
+    in place in a single continuous string, so a sentence interrupted
+    mid-clause by a dropped action rejoins with its original spacing
+    instead of picking up an artificial paragraph break."""
+
+    def _replace(match: re.Match) -> str:
+        span = match.group(1)
+        is_action = len(span.split()) > _EMPHASIS_WORD_LIMIT or _is_freestanding(
+            text[:match.start()], text[match.end():]
+        )
+        return "" if is_action else span
+
+    cleaned = _ASTERISK_SPAN.sub(_replace, text)
+    return _normalize_whitespace(cleaned)
 
 
 def _play_with_avatar_sync(samples, sample_rate: int, avatar) -> None:
@@ -90,11 +128,24 @@ class VoiceProvider(ABC):
         ...
 
     def speak(self, text: str, avatar=None) -> None:
-        """Synthesize and play text as audio. If `avatar` (an
-        AvatarProvider) is given, mouth movement is streamed in sync
-        with playback."""
-        samples, sample_rate = self._synthesize(text)
-        _play_with_avatar_sync(samples, sample_rate, avatar)
+        """Synthesize and play text as audio. `text` is the full reply,
+        asterisks and all -- this splits it into action/dialogue segments
+        (see split_speech_segments()), setting the avatar's expression
+        for each action right before speaking the dialogue that follows
+        it, and mouth movement is streamed in sync with each dialogue
+        segment's playback."""
+        pending_expression = None
+        for kind, content in split_speech_segments(text):
+            if kind == "action":
+                from avatar import expression_for_action
+
+                pending_expression = expression_for_action(content)
+                continue
+            if avatar is not None and pending_expression:
+                avatar.set_expression(pending_expression, 1.0)
+                pending_expression = None
+            samples, sample_rate = self._synthesize(content)
+            _play_with_avatar_sync(samples, sample_rate, avatar)
 
 
 class LocalVoiceProvider(VoiceProvider):
@@ -202,6 +253,25 @@ class KokoroVoiceProvider(VoiceProvider):
         ).rstrip("/")
 
     def speak(self, text: str, avatar=None) -> None:
+        """`text` is the full reply, asterisks and all. Splits into
+        action/dialogue segments (see split_speech_segments()) so an
+        avatar expression can be set right before speaking the dialogue
+        that follows it -- each dialogue segment gets its own streamed
+        request, which lines up naturally with kokoro's own per-sentence
+        chunking anyway since actions sit between sentences in practice."""
+        pending_expression = None
+        for kind, content in split_speech_segments(text):
+            if kind == "action":
+                from avatar import expression_for_action
+
+                pending_expression = expression_for_action(content)
+                continue
+            if avatar is not None and pending_expression:
+                avatar.set_expression(pending_expression, 1.0)
+                pending_expression = None
+            self._speak_segment(content, avatar)
+
+    def _speak_segment(self, text: str, avatar=None) -> None:
         import requests
         import sounddevice as sd
 

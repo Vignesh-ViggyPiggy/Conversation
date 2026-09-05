@@ -15,8 +15,40 @@ class AvatarProvider(ABC):
     def set_mouth_open(self, value: float) -> None:
         ...
 
+    def set_expression(self, name: str, value: float) -> None:
+        """Sets one of VRM's standard expression presets: "happy",
+        "angry", "sad", "relaxed", "surprised", or "neutral" to clear.
+        No-op by default -- only meaningful for providers that can
+        actually drive expressions."""
+
     def close(self) -> None:
         pass
+
+
+# Keyword -> VRM expression preset. Deliberately limited to the presets
+# VRM avatars actually support out of the box -- this maps facial/vocal
+# cues in *action* text to an expression, not arbitrary physical poses
+# ("leans in", "crosses arms") which would need real animation clips
+# this project doesn't have.
+_EXPRESSION_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("happy", ("grin", "smil", "laugh", "chuckl", "smirk", "delight", "gleam", "wink")),
+    ("angry", ("glare", "scowl", "growl", "snarl", "furrow", "clench", "seethe")),
+    ("sad", ("frown", "sigh", "tear", "sniff", "droop", "slump", "wince")),
+    ("surprised", ("gasp", "widen", "startl", "jolt", "flinch", "blink in surprise")),
+    ("relaxed", ("relax", "settle", "ease back", "lean back")),
+]
+
+
+def expression_for_action(action_text: str) -> str | None:
+    """Best-effort keyword match from an *action* span's text to a VRM
+    expression preset name, or None if nothing recognized -- most
+    action text (e.g. "leans in", "taps the table") won't map to any
+    facial expression, which is expected and fine."""
+    lowered = action_text.lower()
+    for expression, keywords in _EXPRESSION_KEYWORDS:
+        if any(keyword in lowered for keyword in keywords):
+            return expression
+    return None
 
 
 VTS_WS_URL = os.environ.get("VTS_WS_URL", "ws://localhost:8001")
@@ -83,6 +115,21 @@ class VTubeStudioProvider(AvatarProvider):
             },
         )
 
+    def set_expression(self, name: str, value: float) -> None:
+        """Best-effort: VTube Studio activates expressions by hotkey, not
+        by a generic name -- this only works if the loaded model has a
+        hotkey literally named to match (e.g. "happy"), which is entirely
+        up to how the user set up their model. Silently does nothing if
+        no matching hotkey exists, rather than failing the whole app over
+        an optional cosmetic feature."""
+        try:
+            hotkeys = self._send("HotkeyListRequest")["data"]["availableHotkeys"]
+            match = next((h for h in hotkeys if h["name"].lower() == name.lower()), None)
+            if match and value > 0:
+                self._send("HotkeyTriggerRequest", {"hotkeyID": match["hotkeyID"]})
+        except Exception:
+            pass
+
     def close(self) -> None:
         self.ws.close()
 
@@ -142,6 +189,10 @@ class LocalSceneProvider(AvatarProvider):
     def set_mouth_open(self, value: float) -> None:
         value = max(0.0, min(1.0, value))
         message = json.dumps({"type": "mouth", "value": value})
+        asyncio.run_coroutine_threadsafe(self._broadcast(message), self._loop)
+
+    def set_expression(self, name: str, value: float) -> None:
+        message = json.dumps({"type": "expression", "name": name, "value": value})
         asyncio.run_coroutine_threadsafe(self._broadcast(message), self._loop)
 
     def close(self) -> None:
