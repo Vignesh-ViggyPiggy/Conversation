@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 
 _ASTERISK_SPAN = re.compile(r"\*([^*]+)\*")
 _EMPHASIS_WORD_LIMIT = 2
+_SENTENCE_END = re.compile(r"[.!?]\s*$")
 
 
 def strip_narration(text: str) -> str:
@@ -14,21 +15,43 @@ def strip_narration(text: str) -> str:
     text (narration included) still gets printed and kept in
     conversation history -- this only filters what's spoken.
 
-    Distinguishes the two cases by word count: a short span (at most
-    two words, e.g. "that's *true*") reads as emphasis on a word within
-    the character's own line and is kept; a longer span (e.g. "*They
-    lean forward, studying you*") reads as a described action/aside and
-    is dropped entirely, whether it sits on its own line or is embedded
-    mid-sentence. Not foolproof -- a short action ("*shrugs*") could in
-    principle be misread as emphasis -- but it matches this project's
-    actual narration style, which tends to write full descriptive
-    clauses for actions and single words for emphasis."""
+    A span is treated as an action (dropped) if it's long (more than two
+    words -- "*They lean forward, studying you*") OR if it's freestanding:
+    bounded by a sentence edge on both sides, e.g. "*grins* Welcome back!"
+    (nothing before it but start-of-text/a previous sentence ending, and
+    a new capitalized sentence right after). Anything else short is
+    treated as inline emphasis and kept -- "That's *true*, you got me."
+    has "true" grammatically woven into the surrounding sentence on both
+    sides, unlike a bracketed action. This matters because short action
+    tags like "*grins*" or "*winks*" are exactly the kind of brief,
+    between-lines flavor this character is meant to use, and a pure
+    word-count rule would misread them as emphasis and speak them
+    literally. Not foolproof -- an action embedded mid-clause without
+    surrounding punctuation could still be misread -- but it matches how
+    this character actually writes actions, always as their own
+    sentence-bounded unit."""
 
-    def _replace(match: re.Match) -> str:
+    def _is_freestanding(before: str, after: str) -> bool:
+        before_trimmed = before.rstrip()
+        after_trimmed = after.lstrip()
+        starts_clean = not before_trimmed or bool(_SENTENCE_END.search(before_trimmed))
+        ends_clean = not after_trimmed or after_trimmed[0] in ("*",) or after_trimmed[0].isupper()
+        return starts_clean and ends_clean
+
+    pieces = []
+    last_end = 0
+    for match in _ASTERISK_SPAN.finditer(text):
         span = match.group(1)
-        return span if len(span.split()) <= _EMPHASIS_WORD_LIMIT else ""
+        is_action = len(span.split()) > _EMPHASIS_WORD_LIMIT or _is_freestanding(
+            text[:match.start()], text[match.end():]
+        )
+        pieces.append(text[last_end:match.start()])
+        if not is_action:
+            pieces.append(span)
+        last_end = match.end()
+    pieces.append(text[last_end:])
 
-    cleaned = _ASTERISK_SPAN.sub(_replace, text)
+    cleaned = "".join(pieces)
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n\s*\n+", "\n\n", cleaned)
     return cleaned.strip()
