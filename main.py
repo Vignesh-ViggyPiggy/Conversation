@@ -86,6 +86,8 @@ def make_input_fn():
     from stt import get_stt_provider
 
     stt = get_stt_provider()
+    print("Warming up the speech-to-text model...")
+    stt.warm_up()
 
     def listen() -> str:
         audio = record_push_to_talk()

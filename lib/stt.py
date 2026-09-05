@@ -11,6 +11,10 @@ class STTProvider(ABC):
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
         ...
 
+    def warm_up(self) -> None:
+        """Best-effort: forces model weights to actually load now instead
+        of lazily on the first real transcription. No-op by default."""
+
 
 class LocalSTTProvider(STTProvider):
     """Offline transcription via faster-whisper. No API key; first call
@@ -33,6 +37,16 @@ class LocalSTTProvider(STTProvider):
     def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
         segments, _ = self.model.transcribe(audio, language="en")
         return " ".join(segment.text.strip() for segment in segments).strip()
+
+    def warm_up(self) -> None:
+        # WhisperModel(...) constructs the object immediately, but
+        # ctranslate2 defers actually materializing weights until the
+        # first real transcribe() call -- that's the "Loading weights"
+        # progress bar landing on the first real recording instead of
+        # here. Running one dummy transcription on a second of silence
+        # forces that load now.
+        silence = np.zeros(16000, dtype=np.float32)
+        self.transcribe(silence, sample_rate=16000)
 
 
 def _to_wav_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
