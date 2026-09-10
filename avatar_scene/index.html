@@ -101,6 +101,30 @@ const BREATH_PERIOD_SECONDS = 4.2;
 const BREATH_AMPLITUDE = 0.025;
 let elapsedTime = 0;
 
+// VRM's bind pose is defined as T-pose regardless of the model's design --
+// three-vrm never applies anything else on top of it, so without this the
+// avatar renders arms-out. Applied once on load, on top of which the chest
+// breathing and any future gesture/motion system continues to layer.
+// Starting values -- tune per-model if the arms end up resting at an odd
+// angle; sign is mirrored left/right since normalized bone axes are
+// model-relative, not world-relative.
+const REST_POSE = {
+  leftUpperArm: { z: 1.2 },
+  rightUpperArm: { z: -1.2 },
+  leftLowerArm: { z: 0.15 },
+  rightLowerArm: { z: -0.15 },
+};
+
+function applyRestPose(vrm) {
+  for (const [boneName, rot] of Object.entries(REST_POSE)) {
+    const bone = vrm.humanoid?.getNormalizedBoneNode(boneName);
+    if (!bone) continue;
+    if (rot.x) bone.rotation.x += rot.x;
+    if (rot.y) bone.rotation.y += rot.y;
+    if (rot.z) bone.rotation.z += rot.z;
+  }
+}
+
 const loader = new GLTFLoader();
 loader.register((parser) => new VRMLoaderPlugin(parser));
 loader.load(
@@ -117,12 +141,36 @@ loader.load(
     scene.add(vrm.scene);
     currentVrm = vrm;
 
+    applyRestPose(vrm);
+
     chestBone = vrm.humanoid?.getNormalizedBoneNode("chest") ?? null;
     if (chestBone) {
       chestRestRotationX = chestBone.rotation.x;
     }
 
     console.log("Loaded VRM:", vrm);
+    // Diagnostic: lists which expression presets this specific model
+    // actually has authored. If a name you're trying to trigger (e.g.
+    // "happy") isn't in this list, the model itself doesn't support it --
+    // that's a model-authoring gap, not a code bug.
+    try {
+      if (vrm.expressionManager) {
+        console.log(
+          "Available VRM 1.0 expressions on this model:",
+          vrm.expressionManager.expressions.map((e) => e.expressionName)
+        );
+      } else if (vrm.blendShapeProxy) {
+        const groups = vrm.blendShapeProxy.expressionMap ?? vrm.blendShapeProxy._blendShapeGroups;
+        console.log(
+          "Available VRM 0.x blend shape groups on this model:",
+          groups ? Object.keys(groups) : "(could not enumerate -- use debugSetExpression to test directly)"
+        );
+      } else {
+        console.log("This model has no expressionManager or blendShapeProxy at all -- no facial expressions are possible.");
+      }
+    } catch (err) {
+      console.warn("Could not enumerate expressions:", err);
+    }
   },
   undefined,
   (error) => console.error("Failed to load VRM model:", error)
@@ -196,6 +244,16 @@ function connect() {
   ws.onerror = () => ws.close();
 }
 connect();
+
+// Debug hooks: open this page's browser console and run e.g.
+//   debugSetExpression("happy", 1.0)
+// to test a specific expression directly, independent of whether the
+// Python backend/WebSocket is reaching this page at all. If the face
+// doesn't change, check the "Available ... expressions" log above --
+// the model likely doesn't have that preset authored.
+window.debugSetExpression = setExpression;
+window.debugSetMouth = setMouthOpen;
+window.debugVrm = () => currentVrm;
 
 const clock = new THREE.Clock();
 function animate() {
