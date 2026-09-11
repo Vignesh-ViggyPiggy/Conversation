@@ -148,8 +148,14 @@ class LocalSceneProvider(AvatarProvider):
         async def handler(websocket):
             self._clients.add(websocket)
             try:
-                async for _ in websocket:
-                    pass  # this server only broadcasts, it doesn't need to read
+                # Relays whatever any client sends to every connected
+                # client -- the app itself never sends anything up (it
+                # only listens), so in normal use this loop sees nothing.
+                # It exists so an external tool (motion_cli.py) can connect
+                # as a plain client and have its message reach the browser,
+                # without needing to run inside this same process.
+                async for message in websocket:
+                    await self._broadcast(message)
             finally:
                 self._clients.discard(websocket)
 
