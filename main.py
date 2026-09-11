@@ -100,6 +100,18 @@ def make_input_fn():
     return listen
 
 
+def make_motion_selector(avatar):
+    """Returns None if there's no avatar to animate -- no point loading
+    the embedding model otherwise. Actual clip content lives in
+    lib/motion/library.py; see MotionSelector's docstring for the
+    classify-then-fallback design."""
+    if avatar is None:
+        return None
+    from motion.selector import MotionSelector
+
+    return MotionSelector()
+
+
 def main():
     brain = Brain()
     print("Warming up the local model...")
@@ -107,6 +119,10 @@ def main():
 
     voice = get_voice_provider()
     avatar = make_avatar_client()
+    motion = make_motion_selector(avatar)
+    if motion:
+        print("Warming up the motion classifier...")
+        motion.warm_up()
     get_input = make_input_fn()
     watcher = InputWatcher(get_input) if IDLE_TRIGGER_SECONDS else None
 
@@ -125,7 +141,7 @@ def main():
                         reply = brain.idle_response()
                         print(f"{PERSONA_NAME}> {reply}\n")
                         if voice and strip_narration(reply):
-                            voice.speak(reply, avatar=avatar)
+                            voice.speak(reply, avatar=avatar, motion=motion)
                         continue
                 else:
                     user_input = get_input()
@@ -148,7 +164,7 @@ def main():
             reply = brain.respond(user_input)
             print(f"{PERSONA_NAME}> {reply}\n")
             if voice and strip_narration(reply):
-                voice.speak(reply, avatar=avatar)
+                voice.speak(reply, avatar=avatar, motion=motion)
     finally:
         finished = brain.reset()
         if finished:

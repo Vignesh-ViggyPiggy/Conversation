@@ -21,6 +21,14 @@ class AvatarProvider(ABC):
         No-op by default -- only meaningful for providers that can
         actually drive expressions."""
 
+    def play_motion(self, clip) -> None:
+        """Plays an AnimationClip (see lib/motion/types.py) -- a short
+        body-pose sequence, optionally paired with a facial expression.
+        No-op by default -- only LocalSceneProvider can actually pose
+        arbitrary bones; VTubeStudioProvider has no equivalent in its
+        public API (hotkeys aren't per-bone control), so it's left as a
+        no-op there rather than attempting a poor approximation."""
+
     def close(self) -> None:
         pass
 
@@ -167,6 +175,10 @@ class LocalSceneProvider(AvatarProvider):
 
     def set_expression(self, name: str, value: float) -> None:
         message = json.dumps({"type": "expression", "name": name, "value": value})
+        asyncio.run_coroutine_threadsafe(self._broadcast(message), self._loop)
+
+    def play_motion(self, clip) -> None:
+        message = json.dumps(clip.to_message())
         asyncio.run_coroutine_threadsafe(self._broadcast(message), self._loop)
 
     def close(self) -> None:

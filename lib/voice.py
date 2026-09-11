@@ -1,6 +1,7 @@
 import os
 import re
 import threading
+import time
 from abc import ABC, abstractmethod
 
 _ASTERISK_SPAN = re.compile(r"\*([^*]+)\*")
@@ -127,18 +128,46 @@ class VoiceProvider(ABC):
         (like RVCVoiceProvider) can intercept the samples in between."""
         ...
 
-    def speak(self, text: str, avatar=None) -> None:
+    def speak(self, text: str, avatar=None, motion=None) -> None:
         """Synthesizes the full reply's dialogue up front, then plays the
         finished segments back in order -- synthesis and playback are
         fully separated, so no audio is generated on the fly mid-reply.
-        `text` is the full reply, asterisks and all; split_speech_segments()
-        filters out *action* narration, which is currently just discarded
-        (no gesture/expression system is wired in yet). `avatar`, if
-        given, only drives amplitude-based mouth lip-sync during playback."""
-        dialogue = [content for kind, content in split_speech_segments(text) if kind == "dialogue"]
-        clips = [self._synthesize(content) for content in dialogue]
-        for samples, sample_rate in clips:
-            _play_with_avatar_sync(samples, sample_rate, avatar)
+        `text` is the full reply, asterisks and all.
+
+        Each *action* span (see split_speech_segments()) is resolved to
+        an AnimationClip via `motion` (a MotionSelector) up front, in the
+        same precompute pass as dialogue synthesis, and played through
+        `avatar.play_motion()` right before the dialogue that follows it
+        -- concurrently with that dialogue's audio, not blocking it. A
+        trailing action with no following dialogue still plays, held for
+        its own duration so the reply doesn't end mid-gesture. `motion`
+        being None (or `avatar` being None) just means actions resolve
+        to nothing, same as before this was wired in.
+
+        `avatar`, if given, also drives amplitude-based mouth lip-sync
+        during playback."""
+        units: list[tuple[object | None, str | None]] = []
+        pending_clip = None
+        for kind, content in split_speech_segments(text):
+            if kind == "action":
+                pending_clip = motion.select(content) if motion is not None else None
+                continue
+            units.append((pending_clip, content))
+            pending_clip = None
+        if pending_clip is not None:
+            units.append((pending_clip, None))
+
+        resolved = [
+            (clip, self._synthesize(dialogue) if dialogue is not None else None)
+            for clip, dialogue in units
+        ]
+        for clip, audio in resolved:
+            if avatar is not None and clip is not None:
+                avatar.play_motion(clip)
+            if audio is not None:
+                _play_with_avatar_sync(audio[0], audio[1], avatar)
+            elif clip is not None:
+                time.sleep(clip.duration)
 
 
 class LocalVoiceProvider(VoiceProvider):
