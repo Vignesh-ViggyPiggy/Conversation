@@ -189,9 +189,10 @@ function playMotion(message) {
     keyframes: message.keyframes,
     duration: message.duration,
     startTime: elapsedTime,
+    expression: message.expression || null,
   };
-  if (message.expression) {
-    setExpression(message.expression, 1.0);
+  if (activeMotion.expression) {
+    setExpression(activeMotion.expression, 1.0);
   }
 }
 
@@ -214,6 +215,13 @@ function applyMotionFrame() {
         const alpha = (t - activeMotion.duration) / MOTION_BLEND_OUT_SECONDS;
         delta = [lerp(lastPose[0], 0, alpha), lerp(lastPose[1], 0, alpha), lerp(lastPose[2], 0, alpha)];
       } else {
+        // Pose has fully eased back to baseline -- also clear the clip's
+        // facial expression (if any) so the face returns to neutral in
+        // step with the body, instead of staying stuck on the last
+        // expression indefinitely.
+        if (activeMotion.expression) {
+          setExpression(activeMotion.expression, 0);
+        }
         activeMotion = null;
       }
     }
