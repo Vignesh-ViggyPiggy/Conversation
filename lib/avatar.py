@@ -25,32 +25,6 @@ class AvatarProvider(ABC):
         pass
 
 
-# Keyword -> VRM expression preset. Deliberately limited to the presets
-# VRM avatars actually support out of the box -- this maps facial/vocal
-# cues in *action* text to an expression, not arbitrary physical poses
-# ("leans in", "crosses arms") which would need real animation clips
-# this project doesn't have.
-_EXPRESSION_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
-    ("happy", ("grin", "smil", "laugh", "chuckl", "smirk", "delight", "gleam", "wink")),
-    ("angry", ("glare", "scowl", "growl", "snarl", "furrow", "clench", "seethe")),
-    ("sad", ("frown", "sigh", "tear", "sniff", "droop", "slump", "wince")),
-    ("surprised", ("gasp", "widen", "startl", "jolt", "flinch", "blink in surprise")),
-    ("relaxed", ("relax", "settle", "ease back", "lean back")),
-]
-
-
-def expression_for_action(action_text: str) -> str | None:
-    """Best-effort keyword match from an *action* span's text to a VRM
-    expression preset name, or None if nothing recognized -- most
-    action text (e.g. "leans in", "taps the table") won't map to any
-    facial expression, which is expected and fine."""
-    lowered = action_text.lower()
-    for expression, keywords in _EXPRESSION_KEYWORDS:
-        if any(keyword in lowered for keyword in keywords):
-            return expression
-    return None
-
-
 VTS_WS_URL = os.environ.get("VTS_WS_URL", "ws://localhost:8001")
 PLUGIN_NAME = "Conversation Character Brain"
 PLUGIN_DEVELOPER = "local"

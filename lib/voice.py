@@ -128,23 +128,16 @@ class VoiceProvider(ABC):
         ...
 
     def speak(self, text: str, avatar=None) -> None:
-        """Synthesize and play text as audio. `text` is the full reply,
-        asterisks and all -- this splits it into action/dialogue segments
-        (see split_speech_segments()), setting the avatar's expression
-        for each action right before speaking the dialogue that follows
-        it, and mouth movement is streamed in sync with each dialogue
-        segment's playback."""
-        pending_expression = None
-        for kind, content in split_speech_segments(text):
-            if kind == "action":
-                from avatar import expression_for_action
-
-                pending_expression = expression_for_action(content)
-                continue
-            if avatar is not None and pending_expression:
-                avatar.set_expression(pending_expression, 1.0)
-                pending_expression = None
-            samples, sample_rate = self._synthesize(content)
+        """Synthesizes the full reply's dialogue up front, then plays the
+        finished segments back in order -- synthesis and playback are
+        fully separated, so no audio is generated on the fly mid-reply.
+        `text` is the full reply, asterisks and all; split_speech_segments()
+        filters out *action* narration, which is currently just discarded
+        (no gesture/expression system is wired in yet). `avatar`, if
+        given, only drives amplitude-based mouth lip-sync during playback."""
+        dialogue = [content for kind, content in split_speech_segments(text) if kind == "dialogue"]
+        clips = [self._synthesize(content) for content in dialogue]
+        for samples, sample_rate in clips:
             _play_with_avatar_sync(samples, sample_rate, avatar)
 
 
@@ -191,41 +184,6 @@ class LocalVoiceProvider(VoiceProvider):
         return samples, sample_rate
 
 
-def _iter_stream_frames(response):
-    """Parses tts_service's streaming wire format from a `requests`
-    response opened with stream=True: a 4-byte little-endian sample_rate,
-    then repeated (4-byte little-endian length, PCM16 payload) frames.
-    Yields the sample_rate once as an int, then each frame's decoded
-    float32 samples -- kept separate from playback so the parsing logic
-    is testable without real audio hardware."""
-    import struct
-
-    import numpy as np
-
-    byte_iter = response.iter_content(chunk_size=None)
-    buf = bytearray()
-
-    def read_exact(n):
-        while len(buf) < n:
-            chunk = next(byte_iter, None)
-            if chunk is None:
-                raise EOFError("stream ended before expected data arrived")
-            buf.extend(chunk)
-        result = bytes(buf[:n])
-        del buf[:n]
-        return result
-
-    yield struct.unpack("<I", read_exact(4))[0]
-
-    while True:
-        try:
-            length = struct.unpack("<I", read_exact(4))[0]
-        except EOFError:
-            return
-        payload = read_exact(length)
-        yield np.frombuffer(payload, dtype=np.int16).astype(np.float32) / 32768.0
-
-
 class KokoroVoiceProvider(VoiceProvider):
     """Offline neural TTS via Kokoro-82M -- free (Apache 2.0), no usage
     limits, noticeably more natural than pyttsx3's OS voices. Runs as a
@@ -234,11 +192,11 @@ class KokoroVoiceProvider(VoiceProvider):
     wheel for this project's Python 3.13 -- same "external local
     service" treatment already used for Ollama.
 
-    speak() streams the reply sentence-by-sentence and starts playback
-    on the first one rather than waiting for the entire reply to finish
-    synthesizing -- without this, a multi-sentence reply's *whole* audio
-    has to be generated before any of it is audible, which is what made
-    TTS start noticeably after the text already appeared."""
+    Uses the base VoiceProvider.speak() precompute-then-play flow (via
+    _synthesize() below) rather than streaming audio as it generates --
+    deliberate, so a reply's full audio (and, eventually, its full set of
+    gesture/expression decisions) is ready before any of it plays,
+    instead of committing to playback before the rest is known."""
 
     def __init__(
         self,
@@ -252,67 +210,7 @@ class KokoroVoiceProvider(VoiceProvider):
             server_url or os.environ.get("KOKORO_SERVER_URL", "http://localhost:8500")
         ).rstrip("/")
 
-    def speak(self, text: str, avatar=None) -> None:
-        """`text` is the full reply, asterisks and all. Splits into
-        action/dialogue segments (see split_speech_segments()) so an
-        avatar expression can be set right before speaking the dialogue
-        that follows it -- each dialogue segment gets its own streamed
-        request, which lines up naturally with kokoro's own per-sentence
-        chunking anyway since actions sit between sentences in practice."""
-        pending_expression = None
-        for kind, content in split_speech_segments(text):
-            if kind == "action":
-                from avatar import expression_for_action
-
-                pending_expression = expression_for_action(content)
-                continue
-            if avatar is not None and pending_expression:
-                avatar.set_expression(pending_expression, 1.0)
-                pending_expression = None
-            self._speak_segment(content, avatar)
-
-    def _speak_segment(self, text: str, avatar=None) -> None:
-        import requests
-        import sounddevice as sd
-
-        response = requests.post(
-            f"{self.server_url}/synthesize_stream",
-            json={"text": text, "voice": self.voice, "lang_code": self.lang_code},
-            stream=True,
-            timeout=60,
-        )
-        response.raise_for_status()
-
-        frames = _iter_stream_frames(response)
-        sample_rate = next(frames)
-
-        out_stream = sd.OutputStream(samplerate=sample_rate, channels=1, dtype="float32")
-        out_stream.start()
-        try:
-            for samples in frames:
-                if samples.size == 0:
-                    continue
-                lipsync_thread = None
-                if avatar is not None:
-                    from avatar import animate_mouth_from_audio
-
-                    lipsync_thread = threading.Thread(
-                        target=animate_mouth_from_audio,
-                        args=(avatar, samples, sample_rate),
-                        daemon=True,
-                    )
-                    lipsync_thread.start()
-                out_stream.write(samples.reshape(-1, 1))
-                if lipsync_thread is not None:
-                    lipsync_thread.join(timeout=1)
-        finally:
-            out_stream.stop()
-            out_stream.close()
-
     def _synthesize(self, text: str):
-        # Non-streaming fallback -- used when RVCVoiceProvider wraps this
-        # provider, since RVC's file-based conversion needs a complete
-        # buffer up front anyway, so streaming would gain nothing there.
         import io
         import wave
 
