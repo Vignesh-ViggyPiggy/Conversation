@@ -20,11 +20,13 @@ class MotionSelector:
     no motion at all.
 
     The library itself is two sources merged together: library.py's
-    hand-authored starter clips, plus whatever's been dropped into
-    lib/motion/clips/ (JSON files exported by
-    avatar_scene/convert_mixamo.html, retargeted from real motion
+    hand-authored clips (empty by default -- see that file) plus
+    whatever's been dropped into lib/motion/clips/ (JSON files exported
+    by avatar_scene/convert_mixamo.html, retargeted from real motion
     capture) -- both are just AnimationClip instances by the time they
-    reach here, so this class doesn't care which produced which.
+    reach here, so this class doesn't care which produced which. An
+    empty library (nothing imported yet) just means every action falls
+    through to the generator below.
 
     This is the "classify, then fallback to generate" design:
     ProceduralFallbackGenerator is a placeholder for a real trained
@@ -47,15 +49,18 @@ class MotionSelector:
         """Loads the embedding model and embeds the whole library once,
         up front -- same purpose as Brain.provider.warm_up()/STT's
         warm_up(), so this cost doesn't land on the first *action* span
-        of the first reply."""
+        of the first reply. No-op if the library is empty (nothing to
+        embed yet -- e.g. before any clips have been imported)."""
         self._ensure_library_vectors()
 
     def _ensure_library_vectors(self) -> None:
-        if self._library_vectors is None:
+        if self._library_vectors is None and self._library:
             descriptions = [clip.description for clip in self._library]
             self._library_vectors = np.array(self._provider.embed(descriptions))
 
     def select(self, action_text: str) -> AnimationClip:
+        if not self._library:
+            return self._generator.generate(action_text)
         self._ensure_library_vectors()
         query = np.array(self._provider.embed([action_text])[0])
         scores = self._library_vectors @ query

@@ -5,3 +5,10 @@ venv/
 memory.db
 .vts_token
 avatar_scene/models/*.vrm
+
+# Raw downloaded/recorded source animation files (e.g. Mixamo FBX) --
+# not ours to redistribute, and not needed once converted. Only the
+# exported JSON clips in lib/motion/clips/ get committed. (.gitkeep
+# files are kept so the empty directories themselves stay tracked.)
+animation_raw/*/*
+!animation_raw/*/.gitkeep
