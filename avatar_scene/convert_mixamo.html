@@ -87,7 +87,7 @@
   </select>
 
   <button id="replay-btn" disabled>Replay preview</button>
-  <button id="export-btn" disabled>Export JSON</button>
+  <button id="export-btn" disabled>Save to library</button>
 
   <hr />
   <h2>Existing animations</h2>
@@ -289,7 +289,7 @@ document.getElementById("replay-btn").addEventListener("click", () => {
   if (retargetedClip) playPreview(retargetedClip);
 });
 
-document.getElementById("export-btn").addEventListener("click", () => {
+document.getElementById("export-btn").addEventListener("click", async () => {
   if (!retargetedClip) return;
   const id = document.getElementById("clip-id").value.trim();
   const description = document.getElementById("clip-description").value.trim();
@@ -297,6 +297,10 @@ document.getElementById("export-btn").addEventListener("click", () => {
 
   if (!id) {
     log("Clip id is required before exporting.");
+    return;
+  }
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+    log("Clip id can only contain letters, numbers, underscores, and hyphens.");
     return;
   }
   if (!description) {
@@ -312,14 +316,21 @@ document.getElementById("export-btn").addEventListener("click", () => {
     native_clip: THREE.AnimationClip.toJSON(retargetedClip),
   };
 
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${id}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-  log(`Exported ${id}.json -- move it into lib/motion/clips/ to add it to the animation library.`);
+  // Saved directly into lib/motion/clips/ via convert_tool_server.py --
+  // no browser download + manual move needed.
+  try {
+    const response = await fetch("/api/clips", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `server responded ${response.status}`);
+    log(`Saved "${id}" to lib/motion/clips/ ${result.overwritten ? "(overwrote existing file)" : "(new file)"}.`);
+    refreshExistingClips();
+  } catch (err) {
+    log(`Save failed: ${err.message} -- make sure this page is served by convert_tool_server.py.`);
+  }
 });
 
 // Existing-animations panel: lists what's already in lib/motion/clips/

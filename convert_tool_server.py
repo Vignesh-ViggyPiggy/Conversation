@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
@@ -11,6 +12,8 @@ load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
 
 AVATAR_SCENE_DIR = Path(_PROJECT_ROOT) / "avatar_scene"
 CLIPS_DIR = Path(_PROJECT_ROOT) / "lib" / "motion" / "clips"
+
+_VALID_CLIP_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 
 class ConvertToolHandler(SimpleHTTPRequestHandler):
@@ -43,6 +46,28 @@ class ConvertToolHandler(SimpleHTTPRequestHandler):
             self._send_json(200, clips)
             return
         super().do_GET()
+
+    def do_POST(self):
+        if self.path == "/api/clips":
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                data = json.loads(self.rfile.read(length))
+            except json.JSONDecodeError:
+                self._send_json(400, {"error": "invalid JSON body"})
+                return
+
+            clip_id = data.get("id", "")
+            if not _VALID_CLIP_ID.fullmatch(clip_id):
+                self._send_json(400, {"error": "id must contain only letters, numbers, underscores, and hyphens"})
+                return
+
+            CLIPS_DIR.mkdir(parents=True, exist_ok=True)
+            path = CLIPS_DIR / f"{clip_id}.json"
+            overwritten = path.exists()
+            path.write_text(json.dumps(data, indent=2))
+            self._send_json(200, {"saved": True, "overwritten": overwritten})
+            return
+        self._send_json(404, {"error": "not found"})
 
     def do_DELETE(self):
         if self.path.startswith("/api/clips/"):
