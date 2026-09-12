@@ -150,6 +150,58 @@ let mixer = null;
 let currentAction = null;
 let retargetedClip = null;
 
+// Expression control, same as avatar_scene/index.html's -- so previewing
+// a clip here shows what it'll actually look like in the real scene,
+// including the facial expression bundled with it, not just the body
+// movement.
+const VRM1_EXPRESSIONS = new Set(["happy", "angry", "sad", "relaxed", "surprised", "neutral"]);
+const VRM0_EXPRESSION_MAP = { happy: "joy", angry: "angry", sad: "sorrow", relaxed: "fun", surprised: null, neutral: "neutral" };
+let currentExpressionName = null;
+
+function setExpression(name, value) {
+  if (!currentVrm) return;
+  if (currentVrm.expressionManager) {
+    if (currentExpressionName && currentExpressionName !== name) {
+      currentVrm.expressionManager.setValue(currentExpressionName, 0);
+      currentExpressionName = null;
+    }
+    if (VRM1_EXPRESSIONS.has(name)) {
+      currentVrm.expressionManager.setValue(name, value);
+      currentExpressionName = value > 0 ? name : null;
+    }
+  } else if (currentVrm.blendShapeProxy) {
+    const vrm0Name = VRM0_EXPRESSION_MAP[name];
+    if (currentExpressionName && currentExpressionName !== vrm0Name) {
+      currentVrm.blendShapeProxy.setValue(currentExpressionName, 0);
+      currentExpressionName = null;
+    }
+    if (vrm0Name) {
+      currentVrm.blendShapeProxy.setValue(vrm0Name, value);
+      currentExpressionName = value > 0 ? vrm0Name : null;
+    }
+  }
+}
+
+function clearExpression() {
+  if (currentExpressionName) {
+    setExpression(currentExpressionName, 0);
+  }
+}
+
+// Applies whatever's currently selected in the expression dropdown --
+// call this whenever a preview (re)starts. "(none)" clears whatever was
+// showing rather than leaving a stale expression up from a previous clip.
+function applySelectedExpression() {
+  const name = document.getElementById("clip-expression").value;
+  if (name) {
+    setExpression(name, 1.0);
+  } else {
+    clearExpression();
+  }
+}
+
+document.getElementById("clip-expression").addEventListener("change", applySelectedExpression);
+
 function loadVrm(path) {
   const loader = new GLTFLoader();
   loader.register((parser) => new VRMLoaderPlugin(parser));
@@ -169,6 +221,7 @@ function loadVrm(path) {
       mixer = new THREE.AnimationMixer(vrm.scene);
       currentAction = null;
       retargetedClip = null;
+      currentExpressionName = null;
       document.getElementById("fbx-input").disabled = false;
       document.getElementById("replay-btn").disabled = true;
       document.getElementById("export-btn").disabled = true;
@@ -265,6 +318,7 @@ function playPreview(clip) {
   currentAction = mixer.clipAction(clip);
   currentAction.setLoop(THREE.LoopRepeat);
   currentAction.play();
+  applySelectedExpression();
 }
 
 document.getElementById("fbx-input").addEventListener("change", async (event) => {
@@ -378,6 +432,10 @@ document.getElementById("preview-existing-btn").addEventListener("click", () => 
     log(`"${clip.id}" has no native_clip data (hand-authored clips aren't previewable here) -- skipping.`);
     return;
   }
+  // Sync the expression dropdown to this clip's own stored expression
+  // before previewing, so playPreview() applies the right one (and so
+  // you can see/edit it if you're about to re-save over this clip).
+  document.getElementById("clip-expression").value = clip.expression || "";
   playPreview(THREE.AnimationClip.parse(clip.native_clip));
   log(`Previewing existing clip "${clip.id}".`);
 });
