@@ -36,6 +36,10 @@
     cursor: pointer;
   }
   #panel button:disabled { opacity: 0.4; cursor: default; }
+  #panel hr { border: none; border-top: 1px solid #444; margin: 16px 0 8px; }
+  .row { display: flex; gap: 6px; }
+  .row button { margin-top: 6px; }
+  #delete-existing-btn { flex: 0 0 auto; background: #522; color: #fff; border: 1px solid #833; }
   #log {
     margin-top: 12px;
     white-space: pre-wrap;
@@ -84,6 +88,15 @@
 
   <button id="replay-btn" disabled>Replay preview</button>
   <button id="export-btn" disabled>Export JSON</button>
+
+  <hr />
+  <h2>Existing animations</h2>
+  <label>Clips already in lib/motion/clips/</label>
+  <select id="existing-select"><option value="">(loading...)</option></select>
+  <div class="row">
+    <button id="preview-existing-btn" style="flex:1;">Preview</button>
+    <button id="delete-existing-btn" title="Delete this clip">&#128465;</button>
+  </div>
 
   <div id="log"></div>
 </div>
@@ -307,6 +320,74 @@ document.getElementById("export-btn").addEventListener("click", () => {
   a.click();
   URL.revokeObjectURL(url);
   log(`Exported ${id}.json -- move it into lib/motion/clips/ to add it to the animation library.`);
+});
+
+// Existing-animations panel: lists what's already in lib/motion/clips/
+// (via convert_tool_server.py's /api/clips) so you can preview or delete
+// a clip without having to dig through the JSON files by hand. Only
+// works when this page is served by convert_tool_server.py -- a plain
+// static server (or opening the file directly) has nothing to answer
+// /api/clips with.
+let existingClips = [];
+
+async function refreshExistingClips() {
+  const select = document.getElementById("existing-select");
+  try {
+    const response = await fetch("/api/clips");
+    if (!response.ok) throw new Error(`server responded ${response.status}`);
+    existingClips = await response.json();
+  } catch (err) {
+    log(`Could not load existing clips -- make sure this page is served by convert_tool_server.py, not a plain static server (${err.message}).`);
+    existingClips = [];
+  }
+
+  select.innerHTML = "";
+  if (existingClips.length === 0) {
+    select.innerHTML = '<option value="">(none yet)</option>';
+    return;
+  }
+  for (const clip of existingClips) {
+    const option = document.createElement("option");
+    option.value = clip.id;
+    option.textContent = `${clip.id} -- ${clip.description.slice(0, 40)}`;
+    select.appendChild(option);
+  }
+}
+refreshExistingClips();
+
+document.getElementById("preview-existing-btn").addEventListener("click", () => {
+  const id = document.getElementById("existing-select").value;
+  const clip = existingClips.find((c) => c.id === id);
+  if (!clip) return;
+  if (!currentVrm) {
+    log("Load a VRM first.");
+    return;
+  }
+  if (!clip.native_clip) {
+    log(`"${clip.id}" has no native_clip data (hand-authored clips aren't previewable here) -- skipping.`);
+    return;
+  }
+  playPreview(THREE.AnimationClip.parse(clip.native_clip));
+  log(`Previewing existing clip "${clip.id}".`);
+});
+
+document.getElementById("delete-existing-btn").addEventListener("click", async () => {
+  const id = document.getElementById("existing-select").value;
+  if (!id) return;
+  if (!confirm(`Delete clip "${id}"? This permanently removes it from lib/motion/clips/.`)) return;
+
+  try {
+    const response = await fetch(`/api/clips/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const result = await response.json();
+    if (result.deleted) {
+      log(`Deleted "${id}".`);
+      refreshExistingClips();
+    } else {
+      log(`Could not find "${id}" to delete -- it may have already been removed.`);
+    }
+  } catch (err) {
+    log(`Delete failed: ${err.message}`);
+  }
 });
 
 const clock = new THREE.Clock();
