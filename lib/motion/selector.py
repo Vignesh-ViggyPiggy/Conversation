@@ -3,6 +3,7 @@ import numpy as np
 from embeddings import get_embedding_provider
 
 from .generator import ProceduralFallbackGenerator
+from .imported import load_imported_clips
 from .library import LIBRARY
 from .types import AnimationClip
 
@@ -10,19 +11,25 @@ MATCH_THRESHOLD = 0.45
 
 
 class MotionSelector:
-    """Classifies *action* text against a small hand-authored animation
-    library (library.py) by semantic similarity -- reuses the same
-    EmbeddingProvider already used for lore/memory search (see
-    embeddings.py), so it follows whichever EMBEDDING_PROVIDER the app
-    is already configured with. Falls back to a generic
-    procedurally-generated gesture (generator.py) when nothing matches
-    well enough, rather than leaving an action with no motion at all.
+    """Classifies *action* text against the animation library by
+    semantic similarity -- reuses the same EmbeddingProvider already
+    used for lore/memory search (see embeddings.py), so it follows
+    whichever EMBEDDING_PROVIDER the app is already configured with.
+    Falls back to a generic procedurally-generated gesture (generator.py)
+    when nothing matches well enough, rather than leaving an action with
+    no motion at all.
 
-    This is the "classify, then fallback to generate" design: a real
-    project would replace LIBRARY's hand-authored poses with retargeted
-    motion-capture clips (e.g. from BEAT) and ProceduralFallbackGenerator
-    with a trained co-speech model, without either swap changing this
-    class or its caller (VoiceProvider.speak())."""
+    The library itself is two sources merged together: library.py's
+    hand-authored starter clips, plus whatever's been dropped into
+    lib/motion/clips/ (JSON files exported by
+    avatar_scene/convert_mixamo.html, retargeted from real motion
+    capture) -- both are just AnimationClip instances by the time they
+    reach here, so this class doesn't care which produced which.
+
+    This is the "classify, then fallback to generate" design:
+    ProceduralFallbackGenerator is a placeholder for a real trained
+    co-speech model, swappable without changing this class or its
+    caller (VoiceProvider.speak())."""
 
     def __init__(
         self,
@@ -32,7 +39,7 @@ class MotionSelector:
     ):
         self._provider = get_embedding_provider()
         self._generator = generator or ProceduralFallbackGenerator()
-        self._library = library or LIBRARY
+        self._library = library if library is not None else LIBRARY + load_imported_clips()
         self._threshold = threshold
         self._library_vectors: np.ndarray | None = None
 

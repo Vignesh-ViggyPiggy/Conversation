@@ -1,0 +1,324 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Mixamo -> VRM Clip Converter</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #1a1a1a; color: #eee; font: 13px sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  #panel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 320px;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.75);
+    overflow-y: auto;
+    z-index: 10;
+  }
+  #panel h2 { font-size: 14px; margin: 0 0 8px; }
+  #panel label { display: block; margin-top: 10px; font-size: 12px; opacity: 0.8; }
+  #panel input[type="text"], #panel select {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px;
+    margin-top: 2px;
+    background: #222;
+    color: #eee;
+    border: 1px solid #444;
+  }
+  #panel button {
+    margin-top: 10px;
+    width: 100%;
+    padding: 6px;
+    cursor: pointer;
+  }
+  #panel button:disabled { opacity: 0.4; cursor: default; }
+  #log {
+    margin-top: 12px;
+    white-space: pre-wrap;
+    font-size: 11px;
+    opacity: 0.85;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.min.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="panel">
+  <h2>Mixamo -&gt; VRM Clip Converter</h2>
+
+  <label>VRM model path (relative to this page)</label>
+  <input id="model-path" type="text" value="./models/placeholder.vrm" />
+  <button id="load-vrm-btn">Load VRM</button>
+
+  <label>Mixamo FBX file (downloaded "without skin")</label>
+  <input id="fbx-input" type="file" accept=".fbx" disabled />
+
+  <label>Clip id (used as the filename, e.g. "wave_hello_variant")</label>
+  <input id="clip-id" type="text" placeholder="my_new_clip" />
+
+  <label>Description (used for text matching -- see MotionSelector; write it like the phrases you want this to match, e.g. "waves excitedly, jumps for joy")</label>
+  <input id="clip-description" type="text" placeholder="describe when this clip should play" />
+
+  <label>Expression to fire alongside this clip (optional)</label>
+  <select id="clip-expression">
+    <option value="">(none)</option>
+    <option value="happy">happy</option>
+    <option value="angry">angry</option>
+    <option value="sad">sad</option>
+    <option value="relaxed">relaxed</option>
+    <option value="surprised">surprised</option>
+  </select>
+
+  <button id="replay-btn" disabled>Replay preview</button>
+  <button id="export-btn" disabled>Export JSON</button>
+
+  <div id="log"></div>
+</div>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+import { mixamoVRMRigMap } from "./mixamo_rig_map.js";
+
+const params = new URLSearchParams(window.location.search);
+const modelPathInput = document.getElementById("model-path");
+modelPathInput.value = params.get("model") || modelPathInput.value;
+
+const logEl = document.getElementById("log");
+function log(message) {
+  console.log(message);
+  logEl.textContent = `${message}\n${logEl.textContent}`.slice(0, 4000);
+}
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a1a);
+const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 0.1, 20);
+camera.position.set(0, 1.3, 2.6);
+
+const light = new THREE.DirectionalLight(0xffffff, 1.5);
+light.position.set(1, 1, 1).normalize();
+scene.add(light);
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// Orbit control is on by default here (unlike avatar_scene/index.html) --
+// this is an authoring tool, not an OBS capture source, so free camera
+// control while inspecting a retargeted clip is just more useful.
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.2, 0);
+controls.update();
+
+let currentVrm = null;
+let mixer = null;
+let currentAction = null;
+let retargetedClip = null;
+
+function loadVrm(path) {
+  const loader = new GLTFLoader();
+  loader.register((parser) => new VRMLoaderPlugin(parser));
+  loader.load(
+    path,
+    (gltf) => {
+      const vrm = gltf.userData.vrm;
+      VRMUtils.removeUnnecessaryVertices(gltf.scene);
+      VRMUtils.removeUnnecessaryJoints(gltf.scene);
+      VRMUtils.rotateVRM0(vrm);
+
+      if (currentVrm) {
+        scene.remove(currentVrm.scene);
+      }
+      scene.add(vrm.scene);
+      currentVrm = vrm;
+      mixer = new THREE.AnimationMixer(vrm.scene);
+      currentAction = null;
+      retargetedClip = null;
+      document.getElementById("fbx-input").disabled = false;
+      document.getElementById("replay-btn").disabled = true;
+      document.getElementById("export-btn").disabled = true;
+      log(`Loaded VRM from ${path}`);
+    },
+    undefined,
+    (error) => log(`Failed to load VRM: ${error}`)
+  );
+}
+
+document.getElementById("load-vrm-btn").addEventListener("click", () => {
+  loadVrm(modelPathInput.value);
+});
+loadVrm(modelPathInput.value);
+
+// Adapted from three-vrm's own official example
+// (packages/three-vrm/examples/humanoidAnimation/loadMixamoAnimation.js) --
+// same retargeting math, just reading from a local File (via an object
+// URL) instead of a hosted URL.
+async function loadMixamoAnimationFromFile(file, vrm) {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const loader = new FBXLoader();
+    const asset = await loader.loadAsync(objectUrl);
+    const clip = THREE.AnimationClip.findByName(asset.animations, "mixamo.com");
+    if (!clip) {
+      throw new Error('No "mixamo.com" animation clip found in this FBX -- was it exported from Mixamo?');
+    }
+
+    const tracks = [];
+    const restRotationInverse = new THREE.Quaternion();
+    const parentRestWorldRotation = new THREE.Quaternion();
+    const _quatA = new THREE.Quaternion();
+
+    const hipsNode = asset.getObjectByName("mixamorigHips");
+    if (!hipsNode) {
+      throw new Error('No "mixamorigHips" bone found -- this FBX may not use standard Mixamo rig names.');
+    }
+    const motionHipsHeight = hipsNode.position.y;
+    const vrmHipsHeight = vrm.humanoid.normalizedRestPose.hips.position[1];
+    const hipsPositionScale = vrmHipsHeight / motionHipsHeight;
+
+    let matchedTracks = 0;
+    clip.tracks.forEach((track) => {
+      const trackSplitted = track.name.split(".");
+      const mixamoRigName = trackSplitted[0];
+      const vrmBoneName = mixamoVRMRigMap[mixamoRigName];
+      const vrmNodeName = vrm.humanoid?.getNormalizedBoneNode(vrmBoneName)?.name;
+      const mixamoRigNode = asset.getObjectByName(mixamoRigName);
+
+      if (vrmNodeName == null || !mixamoRigNode) return;
+      matchedTracks++;
+
+      const propertyName = trackSplitted[1];
+      mixamoRigNode.getWorldQuaternion(restRotationInverse).invert();
+      mixamoRigNode.parent.getWorldQuaternion(parentRestWorldRotation);
+
+      if (track instanceof THREE.QuaternionKeyframeTrack) {
+        for (let i = 0; i < track.values.length; i += 4) {
+          const flatQuaternion = track.values.slice(i, i + 4);
+          _quatA.fromArray(flatQuaternion);
+          _quatA.premultiply(parentRestWorldRotation).multiply(restRotationInverse);
+          _quatA.toArray(flatQuaternion);
+          flatQuaternion.forEach((v, index) => {
+            track.values[index + i] = v;
+          });
+        }
+        tracks.push(
+          new THREE.QuaternionKeyframeTrack(
+            `${vrmNodeName}.${propertyName}`,
+            track.times,
+            track.values.map((v, i) => (vrm.meta?.metaVersion === "0" && i % 2 === 0 ? -v : v))
+          )
+        );
+      } else if (track instanceof THREE.VectorKeyframeTrack) {
+        const value = track.values.map(
+          (v, i) => (vrm.meta?.metaVersion === "0" && i % 3 !== 1 ? -v : v) * hipsPositionScale
+        );
+        tracks.push(new THREE.VectorKeyframeTrack(`${vrmNodeName}.${propertyName}`, track.times, value));
+      }
+    });
+
+    log(`Retargeted ${matchedTracks} of ${clip.tracks.length} tracks (unmatched tracks are usually fingers/toes your VRM doesn't rig, or bones this FBX doesn't use -- that's normal).`);
+    return new THREE.AnimationClip("vrmAnimation", clip.duration, tracks);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function playPreview(clip) {
+  if (currentAction) {
+    currentAction.stop();
+  }
+  currentAction = mixer.clipAction(clip);
+  currentAction.setLoop(THREE.LoopRepeat);
+  currentAction.play();
+}
+
+document.getElementById("fbx-input").addEventListener("change", async (event) => {
+  const file = event.target.files[0];
+  if (!file || !currentVrm) return;
+  log(`Retargeting ${file.name}...`);
+  try {
+    retargetedClip = await loadMixamoAnimationFromFile(file, currentVrm);
+    playPreview(retargetedClip);
+    document.getElementById("replay-btn").disabled = false;
+    document.getElementById("export-btn").disabled = false;
+    if (!document.getElementById("clip-id").value) {
+      document.getElementById("clip-id").value = file.name.replace(/\.fbx$/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "_");
+    }
+    log(`Retargeted clip ready, duration ${retargetedClip.duration.toFixed(2)}s. Previewing on loop.`);
+  } catch (err) {
+    log(`Retargeting failed: ${err.message}`);
+  }
+});
+
+document.getElementById("replay-btn").addEventListener("click", () => {
+  if (retargetedClip) playPreview(retargetedClip);
+});
+
+document.getElementById("export-btn").addEventListener("click", () => {
+  if (!retargetedClip) return;
+  const id = document.getElementById("clip-id").value.trim();
+  const description = document.getElementById("clip-description").value.trim();
+  const expression = document.getElementById("clip-expression").value || null;
+
+  if (!id) {
+    log("Clip id is required before exporting.");
+    return;
+  }
+  if (!description) {
+    log("Description is required before exporting -- it's what the classifier matches action text against.");
+    return;
+  }
+
+  const data = {
+    id,
+    description,
+    duration: retargetedClip.duration,
+    expression,
+    native_clip: THREE.AnimationClip.toJSON(retargetedClip),
+  };
+
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${id}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  log(`Exported ${id}.json -- move it into lib/motion/clips/ to add it to the animation library.`);
+});
+
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const delta = clock.getDelta();
+  if (mixer) mixer.update(delta);
+  if (currentVrm) currentVrm.update(delta);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

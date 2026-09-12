@@ -10,6 +10,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
 sys.path.insert(0, os.path.join(_PROJECT_ROOT, "lib"))
 
+from motion.imported import load_imported_clips
 from motion.library import LIBRARY
 
 DEFAULT_WS_URL = (
@@ -18,10 +19,15 @@ DEFAULT_WS_URL = (
 )
 
 
+def all_clips():
+    return LIBRARY + load_imported_clips()
+
+
 def cmd_list(args):
-    for clip in LIBRARY:
+    for clip in all_clips():
         expression = clip.expression or "-"
-        print(f"{clip.id:20} {clip.duration:>4.1f}s  expression={expression:10} {clip.description[:70]}")
+        source = "imported" if clip.native_clip is not None else "hand-authored"
+        print(f"{clip.id:20} {clip.duration:>4.1f}s  expression={expression:10} [{source}]  {clip.description[:60]}")
 
 
 async def _send(ws_url: str, message: dict) -> None:
@@ -32,7 +38,7 @@ async def _send(ws_url: str, message: dict) -> None:
 
 
 def cmd_play(args):
-    clip = next((c for c in LIBRARY if c.id == args.clip_id), None)
+    clip = next((c for c in all_clips() if c.id == args.clip_id), None)
     if clip is None:
         print(f"No clip named {args.clip_id!r}. Run 'motion_cli.py list' to see available clips.", file=sys.stderr)
         sys.exit(1)
@@ -42,11 +48,12 @@ def cmd_play(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Preview lib/motion/library.py clips directly against a "
-        "running avatar_scene page, bypassing the LLM/TTS/classifier "
-        "pipeline entirely -- for fast iteration while tuning clip poses. "
-        "Requires main.py already running with AVATAR_PROVIDER=local_scene "
-        "and a browser tab connected to it."
+        description="Preview animation library clips (hand-authored in "
+        "lib/motion/library.py, or imported into lib/motion/clips/) directly "
+        "against a running avatar_scene page, bypassing the LLM/TTS/classifier "
+        "pipeline entirely -- for fast iteration. Requires main.py already "
+        "running with AVATAR_PROVIDER=local_scene and a browser tab connected "
+        "to it."
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
