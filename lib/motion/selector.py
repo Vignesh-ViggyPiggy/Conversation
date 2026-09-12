@@ -1,3 +1,5 @@
+import random
+
 import numpy as np
 
 from embeddings import get_embedding_provider
@@ -8,6 +10,12 @@ from .library import LIBRARY
 from .types import AnimationClip
 
 MATCH_THRESHOLD = 0.45
+
+# How close a clip's score has to be to the best score to count as "tied"
+# with it -- covers both clips given the literal same description (whose
+# embeddings, and therefore scores, will be near-identical) and clips
+# with different but near-equally-good descriptions for this query.
+TIE_EPSILON = 1e-3
 
 
 class MotionSelector:
@@ -59,12 +67,20 @@ class MotionSelector:
             self._library_vectors = np.array(self._provider.embed(descriptions))
 
     def select(self, action_text: str) -> AnimationClip:
+        """Picks the best-matching clip for `action_text`, or falls back
+        to the generator if nothing clears the threshold. When several
+        clips tie (or nearly tie) for best -- e.g. multiple imported
+        variants sharing the same description, like three different
+        recorded waves -- one is chosen at random each time rather than
+        always playing the same one, so a repeated action doesn't look
+        identical every time it plays."""
         if not self._library:
             return self._generator.generate(action_text)
         self._ensure_library_vectors()
         query = np.array(self._provider.embed([action_text])[0])
         scores = self._library_vectors @ query
-        best_index = int(np.argmax(scores))
-        if scores[best_index] >= self._threshold:
-            return self._library[best_index]
-        return self._generator.generate(action_text)
+        best_score = float(scores.max())
+        if best_score < self._threshold:
+            return self._generator.generate(action_text)
+        candidates = [i for i, score in enumerate(scores) if score >= best_score - TIE_EPSILON]
+        return self._library[random.choice(candidates)]
