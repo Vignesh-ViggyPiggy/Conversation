@@ -268,22 +268,51 @@ function currentBoneMap() {
   return document.getElementById("mirror-checkbox").checked ? MIRRORED_POSE_BONE_MAP : POSE_BONE_MAP;
 }
 
-// Applies Kalidokit's pose rig directly onto the VRM (absolute rotation,
-// not a delta -- this tool poses the VRM fresh each load, with no rest
-// pose/breathing system layered underneath like avatar_scene/index.html
-// has, so there's nothing to compose with here).
+// Raw per-frame pose solves are noisy even with MediaPipe's own
+// smoothLandmarks on -- the official Kalidokit demo notes it applies
+// extra easing on top for the same reason. Exponential moving average
+// per bone: SMOOTHING is how much of each new raw value gets blended in
+// per frame (lower = smoother but more lag, higher = snappier but more
+// jitter). Recording reads from this same smoothed store (see
+// snapshotSmoothedPose()), so what you see live is what gets saved.
+const SMOOTHING = 0.35;
+const smoothedPose = {};
+
+function smoothRotation(key, raw) {
+  if (!smoothedPose[key]) {
+    smoothedPose[key] = { x: raw.x, y: raw.y, z: raw.z };
+  } else {
+    smoothedPose[key].x += (raw.x - smoothedPose[key].x) * SMOOTHING;
+    smoothedPose[key].y += (raw.y - smoothedPose[key].y) * SMOOTHING;
+    smoothedPose[key].z += (raw.z - smoothedPose[key].z) * SMOOTHING;
+  }
+  return smoothedPose[key];
+}
+
+function snapshotSmoothedPose() {
+  const snapshot = {};
+  for (const key of Object.keys(smoothedPose)) snapshot[key] = { ...smoothedPose[key] };
+  return snapshot;
+}
+
+// Applies Kalidokit's pose rig (smoothed) onto the VRM as an absolute
+// rotation, not a delta -- this tool poses the VRM fresh each load, with
+// no rest pose/breathing system layered underneath like
+// avatar_scene/index.html has, so there's nothing to compose with here.
 function applyPoseRig(rig) {
   if (!currentVrm) return;
   const boneMap = currentBoneMap();
   for (const [kalidokitName, vrmName] of Object.entries(boneMap)) {
-    const r = rig[kalidokitName];
+    const raw = rig[kalidokitName];
     const bone = currentVrm.humanoid?.getNormalizedBoneNode(vrmName);
-    if (!r || !bone) continue;
-    bone.rotation.set(r.x, r.y, r.z);
+    if (!raw || !bone) continue;
+    const smoothed = smoothRotation(vrmName, raw);
+    bone.rotation.set(smoothed.x, smoothed.y, smoothed.z);
   }
   const hipsBone = currentVrm.humanoid?.getNormalizedBoneNode("hips");
   if (hipsBone && rig.Hips?.rotation) {
-    hipsBone.rotation.set(rig.Hips.rotation.x, rig.Hips.rotation.y, rig.Hips.rotation.z);
+    const smoothed = smoothRotation("hips", rig.Hips.rotation);
+    hipsBone.rotation.set(smoothed.x, smoothed.y, smoothed.z);
   }
 }
 
@@ -301,29 +330,18 @@ function applyFaceRigLive(rig) {
   if (headBone) headBone.rotation.set(rig.head.x, rig.head.y, rig.head.z);
 }
 
-function captureCurrentPoseSnapshot(rig) {
-  const boneMap = currentBoneMap();
-  const snapshot = {};
-  for (const [kalidokitName, vrmName] of Object.entries(boneMap)) {
-    const r = rig[kalidokitName];
-    if (r) snapshot[vrmName] = { x: r.x, y: r.y, z: r.z };
-  }
-  if (rig.Hips?.rotation) snapshot.hips = { ...rig.Hips.rotation };
-  return snapshot;
-}
-
 document.getElementById("calibrate-btn").addEventListener("click", () => {
   if (!latestPoseRig) {
     log("No pose detected yet -- make sure the camera is running and you're visible in frame.");
     return;
   }
-  neutralPose = captureCurrentPoseSnapshot(latestPoseRig);
+  neutralPose = snapshotSmoothedPose();
   log("Neutral pose captured. Recorded clips will store motion relative to this pose.");
   document.getElementById("record-btn").disabled = false;
 });
 
-function recordSample(rig, timeSeconds) {
-  const raw = captureCurrentPoseSnapshot(rig);
+function recordSample(timeSeconds) {
+  const raw = snapshotSmoothedPose();
   const pose = {};
   for (const [boneName, value] of Object.entries(raw)) {
     const rest = neutralPose[boneName] ?? { x: 0, y: 0, z: 0 };
@@ -369,8 +387,22 @@ holistic.setOptions({
 
 const videoEl = document.getElementById("video-preview");
 
+// Logged once per change, not every frame (onResults fires ~30x/sec) --
+// tells us directly whether poseWorldLandmarks is the thing missing
+// (a library/version issue) versus pose just not being detected at all
+// (usually a framing issue -- torso/shoulders out of camera view).
+let lastPoseTrackingState = null;
+
 holistic.onResults((results) => {
-  if (results.poseLandmarks && results.poseWorldLandmarks) {
+  const hasPoseLandmarks = !!results.poseLandmarks;
+  const hasPoseWorldLandmarks = !!results.poseWorldLandmarks;
+  const state = `${hasPoseLandmarks}-${hasPoseWorldLandmarks}`;
+  if (state !== lastPoseTrackingState) {
+    lastPoseTrackingState = state;
+    log(`Pose tracking changed: poseLandmarks=${hasPoseLandmarks}, poseWorldLandmarks=${hasPoseWorldLandmarks}`);
+  }
+
+  if (hasPoseLandmarks && hasPoseWorldLandmarks) {
     latestPoseRig = Kalidokit.Pose.solve(results.poseWorldLandmarks, results.poseLandmarks, {
       runtime: "mediapipe",
       video: videoEl,
@@ -386,7 +418,7 @@ holistic.onResults((results) => {
   if (isRecording && latestPoseRig) {
     const t = (performance.now() - recordStartTime) / 1000;
     if ((t * 1000) - lastSampleTime >= RECORD_SAMPLE_INTERVAL_MS) {
-      recordSample(latestPoseRig, t);
+      recordSample(t);
       lastSampleTime = t * 1000;
     }
   }
