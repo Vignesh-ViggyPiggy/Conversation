@@ -428,14 +428,26 @@ let mpCamera = null;
 document.getElementById("start-camera-btn").addEventListener("click", async () => {
   if (mpCamera) return;
   try {
+    // 1280x720 instead of 640x480 -- requesting a resolution that
+    // doesn't match your webcam's native aspect ratio makes the browser
+    // crop to fit it, which can cut off more of your body than
+    // necessary. This doesn't add field of view the lens doesn't
+    // physically capture, though -- sitting further back is still the
+    // reliable fix if your torso/shoulders are still out of frame.
     mpCamera = new Camera(videoEl, {
       onFrame: async () => {
         await holistic.send({ image: videoEl });
       },
-      width: 640,
-      height: 480,
+      width: 1280,
+      height: 720,
     });
     await mpCamera.start();
+
+    const track = videoEl.srcObject?.getVideoTracks?.()[0];
+    if (track) {
+      log(`Camera actual settings: ${JSON.stringify(track.getSettings())}`);
+    }
+
     document.getElementById("calibrate-btn").disabled = false;
     log("Camera started. Stand naturally, then click 'Set neutral pose'.");
   } catch (err) {
