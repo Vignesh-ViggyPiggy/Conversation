@@ -10,10 +10,14 @@ per origin:
   it at, including ones in here.
 
 Other sources (Quaternius, CMU BVH mocap, VRMA) were tried and rolled
-back -- see git history if picking one back up later. Next planned
-source is recording reference footage yourself via webcam, which
-sidesteps third-party rig-naming/licensing questions entirely; add a
-`webcam/` directory here when that's built.
+back -- see git history if picking one back up later.
+
+Webcam recording doesn't use this directory at all -- there's no raw
+file to stage, since `avatar_scene/webcam_mocap.html` tracks live and
+saves directly to `lib/motion/clips/` via the same /api/clips endpoint
+the file-based converters use. Uses MediaPipe Holistic + Kalidokit
+(both community-standard but officially deprecated, no actively
+maintained replacement exists for this exact job).
 
 None of the actual downloaded files are committed to the repo (see
 `.gitignore`) — this directory only exists to keep raw source material

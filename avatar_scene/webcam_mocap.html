@@ -1,0 +1,528 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Webcam Motion Recorder</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #1a1a1a; color: #eee; font: 13px sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  #panel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 340px;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.75);
+    overflow-y: auto;
+    z-index: 10;
+  }
+  #panel h2 { font-size: 14px; margin: 0 0 8px; }
+  #panel label { display: block; margin-top: 10px; font-size: 12px; opacity: 0.8; }
+  #panel input[type="text"], #panel select {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px;
+    margin-top: 2px;
+    background: #222;
+    color: #eee;
+    border: 1px solid #444;
+  }
+  #panel button {
+    margin-top: 10px;
+    width: 100%;
+    padding: 6px;
+    cursor: pointer;
+  }
+  #panel button:disabled { opacity: 0.4; cursor: default; }
+  #panel hr { border: none; border-top: 1px solid #444; margin: 16px 0 8px; }
+  .row { display: flex; gap: 6px; }
+  .row button { margin-top: 6px; }
+  .checkbox-row { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
+  .checkbox-row label { margin: 0; }
+  #delete-existing-btn { flex: 0 0 auto; background: #522; color: #fff; border: 1px solid #833; }
+  #record-btn.recording { background: #a22; color: #fff; }
+  #video-preview {
+    width: 100%;
+    margin-top: 8px;
+    border: 1px solid #444;
+    transform: scaleX(-1); /* mirror the preview so it feels like looking in a mirror, independent of the retargeting mirror toggle below */
+  }
+  #log {
+    margin-top: 12px;
+    white-space: pre-wrap;
+    font-size: 11px;
+    opacity: 0.85;
+    max-height: 160px;
+    overflow-y: auto;
+  }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/kalidokit@1.1/dist/kalidokit.umd.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.min.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="panel">
+  <h2>Webcam Motion Recorder</h2>
+  <p style="opacity:0.7; font-size:11px;">
+    Uses MediaPipe Holistic + Kalidokit to drive the VRM live from your
+    webcam. Records body pose only (arms/spine/hips) as deltas from a
+    calibrated neutral pose -- tag an expression afterward, same as the
+    Mixamo converter. Both libraries here are community-standard but
+    officially deprecated with no actively maintained replacement for
+    this exact job -- expect to need to tune the mirror toggle and
+    calibration once you actually try it.
+  </p>
+
+  <label>VRM model path (relative to this page)</label>
+  <input id="model-path" type="text" value="./models/placeholder.vrm" />
+  <button id="load-vrm-btn">Load VRM</button>
+
+  <button id="start-camera-btn">Start camera</button>
+  <video id="video-preview" autoplay playsinline muted></video>
+
+  <div class="checkbox-row">
+    <input type="checkbox" id="mirror-checkbox" checked />
+    <label for="mirror-checkbox">Mirror (swap left/right if arms move backwards)</label>
+  </div>
+
+  <button id="calibrate-btn" disabled>Set neutral pose (stand relaxed, then click)</button>
+
+  <label>Clip id (used as the filename, e.g. "wave_recorded")</label>
+  <input id="clip-id" type="text" placeholder="my_new_clip" />
+
+  <label>Description (used for text matching -- see MotionSelector)</label>
+  <input id="clip-description" type="text" placeholder="describe when this clip should play" />
+
+  <label>Expression to fire alongside this clip (optional)</label>
+  <select id="clip-expression">
+    <option value="">(none)</option>
+    <option value="happy">happy</option>
+    <option value="angry">angry</option>
+    <option value="sad">sad</option>
+    <option value="relaxed">relaxed</option>
+    <option value="surprised">surprised</option>
+  </select>
+
+  <div class="row">
+    <button id="record-btn" disabled>Record</button>
+  </div>
+  <button id="export-btn" disabled>Save to library</button>
+
+  <hr />
+  <h2>Existing animations</h2>
+  <label>Clips already in lib/motion/clips/</label>
+  <select id="existing-select"><option value="">(loading...)</option></select>
+  <div class="row">
+    <button id="preview-existing-btn" style="flex:1;">Preview</button>
+    <button id="delete-existing-btn" title="Delete this clip">&#128465;</button>
+  </div>
+
+  <div id="log"></div>
+</div>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+
+const params = new URLSearchParams(window.location.search);
+const modelPathInput = document.getElementById("model-path");
+modelPathInput.value = params.get("model") || modelPathInput.value;
+
+const logEl = document.getElementById("log");
+function log(message) {
+  console.log(message);
+  logEl.textContent = `${message}\n${logEl.textContent}`.slice(0, 4000);
+}
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a1a);
+const camera3d = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 0.1, 20);
+camera3d.position.set(0, 1.3, 2.6);
+
+const light = new THREE.DirectionalLight(0xffffff, 1.5);
+light.position.set(1, 1, 1).normalize();
+scene.add(light);
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+
+window.addEventListener("resize", () => {
+  camera3d.aspect = window.innerWidth / window.innerHeight;
+  camera3d.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+const controls = new OrbitControls(camera3d, renderer.domElement);
+controls.target.set(0, 1.2, 0);
+controls.update();
+
+let currentVrm = null;
+
+const VRM1_EXPRESSIONS = new Set(["happy", "angry", "sad", "relaxed", "surprised", "neutral"]);
+const VRM0_EXPRESSION_MAP = { happy: "joy", angry: "angry", sad: "sorrow", relaxed: "fun", surprised: null, neutral: "neutral" };
+let currentExpressionName = null;
+
+function setExpression(name, value) {
+  if (!currentVrm) return;
+  if (currentVrm.expressionManager) {
+    if (currentExpressionName && currentExpressionName !== name) {
+      currentVrm.expressionManager.setValue(currentExpressionName, 0);
+      currentExpressionName = null;
+    }
+    if (VRM1_EXPRESSIONS.has(name)) {
+      currentVrm.expressionManager.setValue(name, value);
+      currentExpressionName = value > 0 ? name : null;
+    }
+  } else if (currentVrm.blendShapeProxy) {
+    const vrm0Name = VRM0_EXPRESSION_MAP[name];
+    if (currentExpressionName && currentExpressionName !== vrm0Name) {
+      currentVrm.blendShapeProxy.setValue(currentExpressionName, 0);
+      currentExpressionName = null;
+    }
+    if (vrm0Name) {
+      currentVrm.blendShapeProxy.setValue(vrm0Name, value);
+      currentExpressionName = value > 0 ? vrm0Name : null;
+    }
+  }
+}
+function clearExpression() {
+  if (currentExpressionName) setExpression(currentExpressionName, 0);
+}
+function applySelectedExpression() {
+  const name = document.getElementById("clip-expression").value;
+  if (name) setExpression(name, 1.0);
+  else clearExpression();
+}
+document.getElementById("clip-expression").addEventListener("change", applySelectedExpression);
+
+function loadVrm(path) {
+  const loader = new GLTFLoader();
+  loader.register((parser) => new VRMLoaderPlugin(parser));
+  loader.load(
+    path,
+    (gltf) => {
+      const vrm = gltf.userData.vrm;
+      VRMUtils.removeUnnecessaryVertices(gltf.scene);
+      VRMUtils.removeUnnecessaryJoints(gltf.scene);
+      VRMUtils.rotateVRM0(vrm);
+      if (currentVrm) scene.remove(currentVrm.scene);
+      scene.add(vrm.scene);
+      currentVrm = vrm;
+      currentExpressionName = null;
+      log(`Loaded VRM from ${path}`);
+    },
+    undefined,
+    (error) => log(`Failed to load VRM: ${error}`)
+  );
+}
+document.getElementById("load-vrm-btn").addEventListener("click", () => loadVrm(modelPathInput.value));
+loadVrm(modelPathInput.value);
+
+// Kalidokit pose-solver key -> VRM humanoid bone name. Legs and fingers
+// are intentionally excluded: Kalidokit's own docs flag leg tracking as
+// work-in-progress, and this project's use case (conversational
+// gestures) doesn't need either. "Hips" is handled separately below
+// since Kalidokit nests its rotation under Hips.rotation.
+const POSE_BONE_MAP = {
+  Spine: "spine",
+  RightUpperArm: "rightUpperArm",
+  LeftUpperArm: "leftUpperArm",
+  RightLowerArm: "rightLowerArm",
+  LeftLowerArm: "leftLowerArm",
+  RightHand: "rightHand",
+  LeftHand: "leftHand",
+};
+const MIRRORED_POSE_BONE_MAP = {
+  Spine: "spine",
+  RightUpperArm: "leftUpperArm",
+  LeftUpperArm: "rightUpperArm",
+  RightLowerArm: "leftLowerArm",
+  LeftLowerArm: "rightLowerArm",
+  RightHand: "leftHand",
+  LeftHand: "rightHand",
+};
+
+let latestPoseRig = null; // raw Kalidokit output, refreshed every tracked frame
+let neutralPose = null;   // { boneName: {x,y,z}, hips: {x,y,z} } captured at calibration
+let isRecording = false;
+let recordStartTime = 0;
+let recordedFrames = []; // [{t, pose: {boneName: [dx,dy,dz]}}]
+const RECORD_SAMPLE_INTERVAL_MS = 100;
+let lastSampleTime = 0;
+
+function currentBoneMap() {
+  return document.getElementById("mirror-checkbox").checked ? MIRRORED_POSE_BONE_MAP : POSE_BONE_MAP;
+}
+
+// Applies Kalidokit's pose rig directly onto the VRM (absolute rotation,
+// not a delta -- this tool poses the VRM fresh each load, with no rest
+// pose/breathing system layered underneath like avatar_scene/index.html
+// has, so there's nothing to compose with here).
+function applyPoseRig(rig) {
+  if (!currentVrm) return;
+  const boneMap = currentBoneMap();
+  for (const [kalidokitName, vrmName] of Object.entries(boneMap)) {
+    const r = rig[kalidokitName];
+    const bone = currentVrm.humanoid?.getNormalizedBoneNode(vrmName);
+    if (!r || !bone) continue;
+    bone.rotation.set(r.x, r.y, r.z);
+  }
+  const hipsBone = currentVrm.humanoid?.getNormalizedBoneNode("hips");
+  if (hipsBone && rig.Hips?.rotation) {
+    hipsBone.rotation.set(rig.Hips.rotation.x, rig.Hips.rotation.y, rig.Hips.rotation.z);
+  }
+}
+
+function applyFaceRigLive(rig) {
+  if (!currentVrm) return;
+  // Live feedback only -- not recorded. Mouth vowel shapes and blink are
+  // the two things every VRM is likely to actually have authored.
+  if (currentVrm.expressionManager) {
+    currentVrm.expressionManager.setValue("aa", Math.max(rig.mouth.shape.A, rig.mouth.shape.O));
+    currentVrm.expressionManager.setValue("ih", rig.mouth.shape.I);
+    currentVrm.expressionManager.setValue("ou", rig.mouth.shape.U);
+    currentVrm.expressionManager.setValue("ee", rig.mouth.shape.E);
+  }
+  const headBone = currentVrm.humanoid?.getNormalizedBoneNode("head");
+  if (headBone) headBone.rotation.set(rig.head.x, rig.head.y, rig.head.z);
+}
+
+function captureCurrentPoseSnapshot(rig) {
+  const boneMap = currentBoneMap();
+  const snapshot = {};
+  for (const [kalidokitName, vrmName] of Object.entries(boneMap)) {
+    const r = rig[kalidokitName];
+    if (r) snapshot[vrmName] = { x: r.x, y: r.y, z: r.z };
+  }
+  if (rig.Hips?.rotation) snapshot.hips = { ...rig.Hips.rotation };
+  return snapshot;
+}
+
+document.getElementById("calibrate-btn").addEventListener("click", () => {
+  if (!latestPoseRig) {
+    log("No pose detected yet -- make sure the camera is running and you're visible in frame.");
+    return;
+  }
+  neutralPose = captureCurrentPoseSnapshot(latestPoseRig);
+  log("Neutral pose captured. Recorded clips will store motion relative to this pose.");
+  document.getElementById("record-btn").disabled = false;
+});
+
+function recordSample(rig, timeSeconds) {
+  const raw = captureCurrentPoseSnapshot(rig);
+  const pose = {};
+  for (const [boneName, value] of Object.entries(raw)) {
+    const rest = neutralPose[boneName] ?? { x: 0, y: 0, z: 0 };
+    pose[boneName] = [value.x - rest.x, value.y - rest.y, value.z - rest.z];
+  }
+  recordedFrames.push({ t: timeSeconds, pose });
+}
+
+const recordBtn = document.getElementById("record-btn");
+recordBtn.addEventListener("click", () => {
+  if (!neutralPose) {
+    log("Set a neutral pose first.");
+    return;
+  }
+  isRecording = !isRecording;
+  recordBtn.textContent = isRecording ? "Stop recording" : "Record";
+  recordBtn.classList.toggle("recording", isRecording);
+  if (isRecording) {
+    recordedFrames = [];
+    recordStartTime = performance.now();
+    lastSampleTime = 0;
+    log("Recording... move, then click Stop recording.");
+  } else {
+    log(`Recorded ${recordedFrames.length} frame(s), ${(recordedFrames.at(-1)?.t ?? 0).toFixed(2)}s.`);
+    document.getElementById("export-btn").disabled = recordedFrames.length === 0;
+  }
+});
+
+// MediaPipe Holistic + Kalidokit wiring. onResults fires once per
+// tracked video frame; recording just samples whatever's already being
+// computed live, at a fixed interval, rather than running its own
+// separate detection loop.
+const holistic = new Holistic({
+  locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`,
+});
+holistic.setOptions({
+  modelComplexity: 1,
+  smoothLandmarks: true,
+  refineFaceLandmarks: true,
+  minDetectionConfidence: 0.6,
+  minTrackingConfidence: 0.6,
+});
+
+const videoEl = document.getElementById("video-preview");
+
+holistic.onResults((results) => {
+  if (results.poseLandmarks && results.poseWorldLandmarks) {
+    latestPoseRig = Kalidokit.Pose.solve(results.poseWorldLandmarks, results.poseLandmarks, {
+      runtime: "mediapipe",
+      video: videoEl,
+      enableLegs: false,
+    });
+    if (latestPoseRig) applyPoseRig(latestPoseRig);
+  }
+  if (results.faceLandmarks) {
+    const faceRig = Kalidokit.Face.solve(results.faceLandmarks, { runtime: "mediapipe", video: videoEl });
+    if (faceRig) applyFaceRigLive(faceRig);
+  }
+
+  if (isRecording && latestPoseRig) {
+    const t = (performance.now() - recordStartTime) / 1000;
+    if ((t * 1000) - lastSampleTime >= RECORD_SAMPLE_INTERVAL_MS) {
+      recordSample(latestPoseRig, t);
+      lastSampleTime = t * 1000;
+    }
+  }
+});
+
+let mpCamera = null;
+document.getElementById("start-camera-btn").addEventListener("click", async () => {
+  if (mpCamera) return;
+  try {
+    mpCamera = new Camera(videoEl, {
+      onFrame: async () => {
+        await holistic.send({ image: videoEl });
+      },
+      width: 640,
+      height: 480,
+    });
+    await mpCamera.start();
+    document.getElementById("calibrate-btn").disabled = false;
+    log("Camera started. Stand naturally, then click 'Set neutral pose'.");
+  } catch (err) {
+    log(`Could not start camera: ${err.message}`);
+  }
+});
+
+document.getElementById("export-btn").addEventListener("click", async () => {
+  if (recordedFrames.length === 0) return;
+  const id = document.getElementById("clip-id").value.trim();
+  const description = document.getElementById("clip-description").value.trim();
+  const expression = document.getElementById("clip-expression").value || null;
+
+  if (!id) {
+    log("Clip id is required before saving.");
+    return;
+  }
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+    log("Clip id can only contain letters, numbers, underscores, and hyphens.");
+    return;
+  }
+  if (!description) {
+    log("Description is required before saving -- it's what the classifier matches action text against.");
+    return;
+  }
+
+  const duration = recordedFrames.at(-1).t;
+  const data = {
+    id,
+    description,
+    duration,
+    expression,
+    keyframes: recordedFrames,
+  };
+
+  try {
+    const response = await fetch("/api/clips", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `server responded ${response.status}`);
+    log(`Saved "${id}" to lib/motion/clips/ ${result.overwritten ? "(overwrote existing file)" : "(new file)"}.`);
+    refreshExistingClips();
+  } catch (err) {
+    log(`Save failed: ${err.message} -- make sure this page is served by convert_tool_server.py.`);
+  }
+});
+
+let existingClips = [];
+async function refreshExistingClips() {
+  const select = document.getElementById("existing-select");
+  try {
+    const response = await fetch("/api/clips");
+    if (!response.ok) throw new Error(`server responded ${response.status}`);
+    existingClips = await response.json();
+  } catch (err) {
+    log(`Could not load existing clips -- make sure this page is served by convert_tool_server.py (${err.message}).`);
+    existingClips = [];
+  }
+  select.innerHTML = "";
+  if (existingClips.length === 0) {
+    select.innerHTML = '<option value="">(none yet)</option>';
+    return;
+  }
+  for (const clip of existingClips) {
+    const option = document.createElement("option");
+    option.value = clip.id;
+    option.textContent = `${clip.id} -- ${clip.description.slice(0, 40)}`;
+    select.appendChild(option);
+  }
+}
+refreshExistingClips();
+
+document.getElementById("preview-existing-btn").addEventListener("click", () => {
+  const id = document.getElementById("existing-select").value;
+  const clip = existingClips.find((c) => c.id === id);
+  if (!clip || !currentVrm) return;
+  document.getElementById("clip-expression").value = clip.expression || "";
+  applySelectedExpression();
+  if (clip.native_clip) {
+    log(`"${clip.id}" is a native_clip (from a file-based converter) -- this tool only previews its own keyframe-format clips directly, but it'll still play correctly in the real app.`);
+    return;
+  }
+  // Simple one-shot pose-and-hold preview of a keyframe clip's final pose.
+  const last = clip.keyframes.at(-1);
+  for (const [boneName, delta] of Object.entries(last.pose)) {
+    const bone = currentVrm.humanoid?.getNormalizedBoneNode(boneName);
+    if (bone) bone.rotation.set(delta[0], delta[1], delta[2]);
+  }
+  log(`Previewing final pose of "${clip.id}" (static -- open the real avatar scene to see it play back in motion).`);
+});
+
+document.getElementById("delete-existing-btn").addEventListener("click", async () => {
+  const id = document.getElementById("existing-select").value;
+  if (!id) return;
+  if (!confirm(`Delete clip "${id}"? This permanently removes it from lib/motion/clips/.`)) return;
+  try {
+    const response = await fetch(`/api/clips/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const result = await response.json();
+    if (result.deleted) {
+      log(`Deleted "${id}".`);
+      refreshExistingClips();
+    } else {
+      log(`Could not find "${id}" to delete -- it may have already been removed.`);
+    }
+  } catch (err) {
+    log(`Delete failed: ${err.message}`);
+  }
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  if (currentVrm) currentVrm.update(1 / 60);
+  controls.update();
+  renderer.render(scene, camera3d);
+}
+animate();
+</script>
+</body>
+</html>
