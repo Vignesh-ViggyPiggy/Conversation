@@ -225,10 +225,24 @@ function playMotion(message) {
       (name) => boneNodes[name] && trackBoneNames.has(boneNodes[name].name)
     );
 
+    // Some sources (VRMA in particular) bake facial expression directly
+    // into the clip as NumberKeyframeTracks (e.g. "happy.weight"), rather
+    // than a single static expression name -- treated generically here as
+    // "a scalar property on some named object", faded to 0 on blend-out
+    // the same way bone rotations ease back to baseline. Mixamo clips
+    // never have these, so this is a no-op list for them.
+    const numberTracks = clip.tracks
+      .filter((track) => track instanceof THREE.NumberKeyframeTrack)
+      .map((track) => {
+        const dot = track.name.lastIndexOf(".");
+        return { objectName: track.name.slice(0, dot), property: track.name.slice(dot + 1) };
+      });
+
     activeMotion = {
       native: true,
       action,
       boneNames,
+      numberTracks,
       blendStart: null,
       duration: message.duration,
       startTime: elapsedTime,
@@ -268,13 +282,18 @@ function advanceMotion() {
 
     if (!activeMotion.blendStart) {
       // Clip just finished -- stop the mixer from fighting our manual
-      // writes, and capture each affected bone's current quaternion as
-      // this blend-out's starting point.
+      // writes, and capture each affected bone's current quaternion (and
+      // any scalar/expression tracks' current value) as this blend-out's
+      // starting point.
       activeMotion.action.stop();
       activeMotion.blendStart = {};
       for (const name of activeMotion.boneNames) {
         activeMotion.blendStart[name] = boneNodes[name].quaternion.clone();
       }
+      activeMotion.numberBlendStart = activeMotion.numberTracks.map(({ objectName, property }) => {
+        const obj = currentVrm.scene.getObjectByName(objectName);
+        return { obj, property, from: obj ? obj[property] : 0 };
+      });
     }
 
     const alpha = easeInOut(Math.min(1, (t - activeMotion.duration) / MOTION_BLEND_OUT_SECONDS));
@@ -284,6 +303,9 @@ function advanceMotion() {
         baselineQuaternion(name),
         alpha
       );
+    }
+    for (const { obj, property, from } of activeMotion.numberBlendStart) {
+      if (obj) obj[property] = lerp(from, 0, alpha);
     }
 
     if (t > activeMotion.duration + MOTION_BLEND_OUT_SECONDS) {
