@@ -446,6 +446,23 @@ document.getElementById("start-camera-btn").addEventListener("click", async () =
     const track = videoEl.srcObject?.getVideoTracks?.()[0];
     if (track) {
       log(`Camera actual settings: ${JSON.stringify(track.getSettings())}`);
+
+      // Best-effort hardware zoom-out: only does anything if your camera
+      // and browser actually expose a zoom capability (common on phone
+      // cameras and some PTZ webcams, essentially never on a laptop's
+      // built-in webcam -- that's a fixed lens with no zoom hardware at
+      // all, and no browser API can invent optical range it doesn't have).
+      const capabilities = track.getCapabilities?.();
+      if (capabilities?.zoom) {
+        try {
+          await track.applyConstraints({ advanced: [{ zoom: capabilities.zoom.min }] });
+          log(`Camera supports zoom (range ${capabilities.zoom.min}-${capabilities.zoom.max}) -- set to widest (${capabilities.zoom.min}).`);
+        } catch (err) {
+          log(`Camera reports zoom support but applying it failed: ${err.message}`);
+        }
+      } else {
+        log("This camera doesn't expose a zoom control to the browser -- most likely a fixed-lens webcam with no hardware zoom at all. Sitting further back is the only way to fit more of your body in frame.");
+      }
     }
 
     document.getElementById("calibrate-btn").disabled = false;
