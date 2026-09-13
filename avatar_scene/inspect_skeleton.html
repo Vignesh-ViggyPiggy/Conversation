@@ -1,0 +1,144 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Skeleton Inspector</title>
+<style>
+  html, body { margin: 0; padding: 16px; background: #1a1a1a; color: #eee; font: 13px sans-serif; }
+  h2 { font-size: 14px; }
+  p { opacity: 0.75; max-width: 600px; }
+  input[type="file"] { margin: 10px 0; }
+  button { padding: 6px 12px; cursor: pointer; }
+  pre {
+    background: #111;
+    border: 1px solid #444;
+    padding: 10px;
+    white-space: pre;
+    overflow-x: auto;
+    max-width: 900px;
+    font-size: 12px;
+    line-height: 1.4;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<h2>Skeleton Inspector</h2>
+<p>
+  Loads an .fbx or .bvh file and lists every bone/joint name and its
+  parent-child hierarchy -- no VRM, no retargeting, just "what's actually
+  in this file." Paste the output back to figure out how to map it onto a
+  VRM's humanoid bones.
+</p>
+<input id="file-input" type="file" accept=".fbx,.bvh" />
+<div>
+  <button id="copy-btn" disabled>Copy to clipboard</button>
+</div>
+<pre id="output">(pick a file)</pre>
+<script type="module">
+import * as THREE from "three";
+import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
+import { BVHLoader } from "three/addons/loaders/BVHLoader.js";
+
+const output = document.getElementById("output");
+const copyBtn = document.getElementById("copy-btn");
+let lastReport = "";
+
+function describeHierarchy(root) {
+  const lines = [];
+  function walk(node, depth) {
+    const isBone = node instanceof THREE.Bone;
+    const marker = isBone ? "" : "  (non-bone node)";
+    lines.push(`${"  ".repeat(depth)}${node.name || "(unnamed)"}${marker}`);
+    for (const child of node.children) walk(child, depth + 1);
+  }
+  walk(root, 0);
+  return lines.join("\n");
+}
+
+async function inspectFbx(file) {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const loader = new FBXLoader();
+    const asset = await loader.loadAsync(objectUrl);
+
+    const bones = [];
+    asset.traverse((node) => {
+      if (node instanceof THREE.Bone) bones.push(node.name);
+    });
+
+    const animNames = (asset.animations || []).map((clip) => `${clip.name} (${clip.duration.toFixed(2)}s, ${clip.tracks.length} tracks)`);
+
+    let report = `File: ${file.name}\nType: FBX\n\n`;
+    report += `Bone count: ${bones.length}\n`;
+    report += bones.length > 0
+      ? `Bone hierarchy (first bone's root):\n${describeHierarchy(findSkeletonRoot(asset))}\n`
+      : `No THREE.Bone nodes found -- listing full node hierarchy instead:\n${describeHierarchy(asset)}\n`;
+    report += `\nAnimation clips found: ${animNames.length ? animNames.join(", ") : "(none)"}\n`;
+    return report;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function findSkeletonRoot(asset) {
+  let root = null;
+  asset.traverse((node) => {
+    if (!root && node instanceof THREE.Bone) {
+      // Walk up to the topmost Bone ancestor.
+      let top = node;
+      while (top.parent instanceof THREE.Bone) top = top.parent;
+      root = top;
+    }
+  });
+  return root || asset;
+}
+
+async function inspectBvh(file) {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const loader = new BVHLoader();
+    const result = await loader.loadAsync(objectUrl);
+
+    let report = `File: ${file.name}\nType: BVH\n\n`;
+    report += `Bone count: ${result.skeleton.bones.length}\n`;
+    report += `Bone hierarchy:\n${describeHierarchy(result.skeleton.bones[0])}\n`;
+    report += `\nClip: duration ${result.clip.duration.toFixed(2)}s, ${result.clip.tracks.length} tracks\n`;
+    return report;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+document.getElementById("file-input").addEventListener("change", async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  output.textContent = "Loading...";
+  try {
+    const isFbx = /\.fbx$/i.test(file.name);
+    const isBvh = /\.bvh$/i.test(file.name);
+    if (!isFbx && !isBvh) throw new Error("Pick a .fbx or .bvh file.");
+    lastReport = isFbx ? await inspectFbx(file) : await inspectBvh(file);
+    output.textContent = lastReport;
+    copyBtn.disabled = false;
+  } catch (err) {
+    output.textContent = `Failed to load: ${err.message}`;
+    copyBtn.disabled = true;
+  }
+});
+
+copyBtn.addEventListener("click", async () => {
+  await navigator.clipboard.writeText(lastReport);
+  copyBtn.textContent = "Copied!";
+  setTimeout(() => (copyBtn.textContent = "Copy to clipboard"), 1500);
+});
+</script>
+</body>
+</html>
