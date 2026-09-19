@@ -1,0 +1,405 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Text -&gt; Motion Test</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #1a1a1a; color: #eee; font: 13px sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  #panel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 340px;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 12px;
+    background: rgba(0, 0, 0, 0.75);
+    overflow-y: auto;
+    z-index: 10;
+  }
+  #panel h2 { font-size: 14px; margin: 0 0 8px; }
+  #panel label { display: block; margin-top: 10px; font-size: 12px; opacity: 0.8; }
+  #panel input[type="text"], #panel input[type="number"], #panel select, #panel textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 4px;
+    margin-top: 2px;
+    background: #222;
+    color: #eee;
+    border: 1px solid #444;
+    font: inherit;
+  }
+  #panel button {
+    margin-top: 10px;
+    width: 100%;
+    padding: 6px;
+    cursor: pointer;
+  }
+  #panel button:disabled { opacity: 0.4; cursor: default; }
+  #panel hr { border: none; border-top: 1px solid #444; margin: 16px 0 8px; }
+  .row { display: flex; gap: 6px; }
+  .row > * { flex: 1; }
+  #log {
+    margin-top: 12px;
+    white-space: pre-wrap;
+    font-size: 11px;
+    opacity: 0.85;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  .hint { font-size: 11px; opacity: 0.6; margin-top: 4px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.min.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="panel">
+  <h2>Text -&gt; Motion Test</h2>
+  <div class="hint">
+    Quick-and-dirty quality check for MDM's raw output, retargeted onto
+    your VRM via direction-vector approximation (swing only, no twist,
+    delta relative to the clip's own frame 0 -- not the rigorous
+    rest-pose retarget convert_mixamo.html does for real mocap). Good
+    enough to judge "does this gesture read right", not for promoting
+    straight into lib/motion/clips/.
+  </div>
+
+  <label>VRM model path (relative to this page)</label>
+  <input id="model-path" type="text" value="../avatar_scene/models/placeholder.vrm" />
+  <button id="load-vrm-btn">Load VRM</button>
+
+  <hr />
+
+  <label>Text prompt</label>
+  <textarea id="prompt-input" rows="2" placeholder="a person waves happily with their right hand"></textarea>
+  <div class="row">
+    <div>
+      <label>Length (s)</label>
+      <input id="motion-length" type="number" value="4" min="0.5" max="9.5" step="0.5" />
+    </div>
+    <div>
+      <label>Seed</label>
+      <input id="seed" type="number" value="10" step="1" />
+    </div>
+  </div>
+  <button id="generate-btn">Generate</button>
+
+  <hr />
+  <h2>Generated clips</h2>
+  <label>Previously generated (outputs/)</label>
+  <select id="existing-select"><option value="">(loading...)</option></select>
+  <button id="preview-existing-btn">Preview</button>
+
+  <div class="row">
+    <button id="replay-btn" disabled>Replay</button>
+    <button id="loop-btn">Loop: on</button>
+  </div>
+
+  <div id="log"></div>
+</div>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+
+const logEl = document.getElementById("log");
+function log(message) {
+  console.log(message);
+  logEl.textContent = `${message}\n${logEl.textContent}`.slice(0, 6000);
+}
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a1a);
+const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 0.1, 20);
+camera.position.set(0, 1.3, 2.6);
+
+const light = new THREE.DirectionalLight(0xffffff, 1.5);
+light.position.set(1, 1, 1).normalize();
+scene.add(light);
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+
+window.addEventListener("resize", () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.2, 0);
+controls.update();
+
+let currentVrm = null;
+let restWorldQuat = {}; // boneName -> THREE.Quaternion, captured once at load time
+
+// Populated from GET /api/skeleton so the joint table lives in exactly
+// one place (server.py/smpl_joints.py), not duplicated here.
+let JOINT_NAMES = [];
+let PARENTS = [];
+let VRM_BONE_MAP = {};
+
+async function loadSkeleton() {
+  const response = await fetch("/api/skeleton");
+  const data = await response.json();
+  JOINT_NAMES = data.joint_names;
+  PARENTS = data.parents;
+  VRM_BONE_MAP = data.vrm_bone_map;
+}
+
+function captureRestWorldQuats(vrm) {
+  restWorldQuat = {};
+  for (const jointName of JOINT_NAMES) {
+    const boneName = VRM_BONE_MAP[jointName];
+    const node = vrm.humanoid?.getNormalizedBoneNode(boneName);
+    if (!node) continue;
+    restWorldQuat[jointName] = node.getWorldQuaternion(new THREE.Quaternion());
+  }
+}
+
+function loadVrm(path) {
+  const loader = new GLTFLoader();
+  loader.register((parser) => new VRMLoaderPlugin(parser));
+  loader.load(
+    path,
+    (gltf) => {
+      const vrm = gltf.userData.vrm;
+      VRMUtils.removeUnnecessaryVertices(gltf.scene);
+      VRMUtils.removeUnnecessaryJoints(gltf.scene);
+      VRMUtils.rotateVRM0(vrm);
+
+      if (currentVrm) scene.remove(currentVrm.scene);
+      scene.add(vrm.scene);
+      currentVrm = vrm;
+      captureRestWorldQuats(vrm);
+      log(`Loaded VRM from ${path}`);
+    },
+    undefined,
+    (error) => log(`Failed to load VRM: ${error}`)
+  );
+}
+
+document.getElementById("load-vrm-btn").addEventListener("click", () => {
+  loadVrm(document.getElementById("model-path").value);
+});
+
+// --- Retargeting: direction-vector approximation ---------------------
+//
+// MDM only gives us joint XYZ positions, not bone rotations, so there's
+// no per-bone "animated local quaternion" the way a real mocap FBX has.
+// Instead: for each joint, compare its parent->child direction vector at
+// frame f against frame 0 of the SAME clip, turning that into a world
+// delta quaternion. Composed root-to-leaf (subtracting out each parent's
+// own delta) and applied on top of the VRM's own rest-pose world
+// orientation for that bone, same idea as convert_mixamo.html's
+// parentRestWorldRotation trick, just derived from positions instead of
+// an FBX's real rotation tracks.
+//
+// This captures SWING (the direction a limb points) but not TWIST
+// (rotation around the limb's own axis, e.g. forearm pronation) --
+// there's no way to recover twist from joint positions alone. Frame 0 of
+// every retargeted clip is, by construction, the VRM's own rest pose
+// (delta-from-frame-0 is zero there) -- so what you're judging is the
+// *shape* of the generated motion, not its absolute starting stance.
+
+function unitDir(a, b) {
+  return new THREE.Vector3(b[0] - a[0], b[1] - a[1], b[2] - a[2]).normalize();
+}
+
+function computeLocalQuatsForFrame(frames, frame0, frameIndex) {
+  const positions = frames[frameIndex];
+  const worldQuat = { Pelvis: restWorldQuat["Pelvis"] ?? new THREE.Quaternion() };
+  const localQuats = {};
+
+  for (let j = 1; j < JOINT_NAMES.length; j++) {
+    const jointName = JOINT_NAMES[j];
+    const parentName = JOINT_NAMES[PARENTS[j]];
+    const boneName = VRM_BONE_MAP[jointName];
+    const parentWorld = worldQuat[parentName] ?? new THREE.Quaternion();
+
+    if (!restWorldQuat[jointName]) {
+      // This VRM doesn't rig this bone (e.g. no upperChest/toes) --
+      // pass the parent's world orientation straight through so
+      // downstream children still compose correctly.
+      worldQuat[jointName] = parentWorld;
+      continue;
+    }
+
+    const dir0 = unitDir(frame0[PARENTS[j]], frame0[j]);
+    const dirF = unitDir(positions[PARENTS[j]], positions[j]);
+    const deltaWorld = new THREE.Quaternion().setFromUnitVectors(dir0, dirF);
+
+    const targetWorld = deltaWorld.clone().multiply(restWorldQuat[jointName]);
+    const localQuat = parentWorld.clone().invert().multiply(targetWorld);
+
+    localQuats[boneName] = localQuat;
+    worldQuat[jointName] = targetWorld;
+  }
+  return localQuats;
+}
+
+// --- Playback ----------------------------------------------------------
+
+let activeClip = null; // { frames, fps, precomputed: [{boneName: quat}, ...] }
+let playStartTime = null;
+let loopEnabled = true;
+const clock = new THREE.Clock();
+let elapsedTime = 0;
+
+function prepareClip(clip) {
+  if (!currentVrm) {
+    log("Load a VRM first.");
+    return null;
+  }
+  const frame0 = clip.frames[0];
+  const precomputed = clip.frames.map((_, i) => computeLocalQuatsForFrame(clip.frames, frame0, i));
+  return { frames: clip.frames, fps: clip.fps, precomputed };
+}
+
+function playClip(clip) {
+  activeClip = prepareClip(clip);
+  playStartTime = elapsedTime;
+  document.getElementById("replay-btn").disabled = false;
+}
+
+function advancePlayback() {
+  if (!activeClip || !currentVrm) return;
+  const duration = activeClip.frames.length / activeClip.fps;
+  let t = elapsedTime - playStartTime;
+  if (t > duration) {
+    if (!loopEnabled) return;
+    playStartTime = elapsedTime;
+    t = 0;
+  }
+
+  const frameFloat = t * activeClip.fps;
+  const i0 = Math.min(Math.floor(frameFloat), activeClip.precomputed.length - 1);
+  const i1 = Math.min(i0 + 1, activeClip.precomputed.length - 1);
+  const alpha = frameFloat - i0;
+
+  const poseA = activeClip.precomputed[i0];
+  const poseB = activeClip.precomputed[i1];
+  for (const boneName of Object.keys(poseB)) {
+    const node = currentVrm.humanoid?.getNormalizedBoneNode(boneName);
+    if (!node) continue;
+    const qa = poseA[boneName] ?? poseB[boneName];
+    node.quaternion.copy(qa).slerp(poseB[boneName], alpha);
+  }
+}
+
+// --- Server interaction --------------------------------------------------
+
+document.getElementById("generate-btn").addEventListener("click", async () => {
+  const text = document.getElementById("prompt-input").value.trim();
+  if (!text) {
+    log("Enter a text prompt first.");
+    return;
+  }
+  if (!currentVrm) {
+    log("Load a VRM first.");
+    return;
+  }
+  const motion_length = parseFloat(document.getElementById("motion-length").value) || 4.0;
+  const seed = parseInt(document.getElementById("seed").value, 10) || 10;
+
+  const btn = document.getElementById("generate-btn");
+  btn.disabled = true;
+  log(`Generating "${text}" (this runs MDM's diffusion sampling -- watch server.py's console for progress)...`);
+  try {
+    const response = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, motion_length, seed }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `server responded ${response.status}`);
+    log(`Generated "${result.slug}", ${result.frames.length} frames at ${result.fps}fps. Playing on loop.`);
+    playClip(result);
+    refreshExistingOutputs();
+  } catch (err) {
+    log(`Generate failed: ${err.message}`);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("replay-btn").addEventListener("click", () => {
+  if (activeClip) playStartTime = elapsedTime;
+});
+
+document.getElementById("loop-btn").addEventListener("click", (event) => {
+  loopEnabled = !loopEnabled;
+  event.target.textContent = `Loop: ${loopEnabled ? "on" : "off"}`;
+});
+
+let existingOutputs = [];
+
+async function refreshExistingOutputs() {
+  const select = document.getElementById("existing-select");
+  try {
+    const response = await fetch("/api/outputs");
+    existingOutputs = await response.json();
+  } catch (err) {
+    log(`Could not load outputs list (${err.message}).`);
+    existingOutputs = [];
+  }
+  select.innerHTML = "";
+  if (existingOutputs.length === 0) {
+    select.innerHTML = '<option value="">(none yet)</option>';
+    return;
+  }
+  for (const item of existingOutputs) {
+    const option = document.createElement("option");
+    option.value = item.slug;
+    option.textContent = `${item.slug} -- ${(item.text ?? "").slice(0, 40)}`;
+    select.appendChild(option);
+  }
+}
+
+document.getElementById("preview-existing-btn").addEventListener("click", async () => {
+  const slug = document.getElementById("existing-select").value;
+  if (!slug) return;
+  try {
+    const response = await fetch(`/api/outputs/${encodeURIComponent(slug)}`);
+    if (!response.ok) throw new Error(`server responded ${response.status}`);
+    const clip = await response.json();
+    log(`Previewing "${slug}" (${clip.frames.length} frames at ${clip.fps}fps).`);
+    playClip(clip);
+  } catch (err) {
+    log(`Could not load "${slug}": ${err.message}`);
+  }
+});
+
+// --- Boot ----------------------------------------------------------------
+
+async function boot() {
+  await loadSkeleton();
+  loadVrm(document.getElementById("model-path").value);
+  refreshExistingOutputs();
+}
+boot();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const delta = clock.getDelta();
+  elapsedTime += delta;
+  advancePlayback();
+  if (currentVrm) currentVrm.update(delta);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

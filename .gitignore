@@ -12,3 +12,8 @@ avatar_scene/models/*.vrm
 # files are kept so the empty directories themselves stay tracked.)
 animation_raw/*/*
 !animation_raw/*/.gitkeep
+
+# Generated test clips from text_to_motion_test/ -- throwaway model
+# outputs for judging quality, not curated library assets.
+text_to_motion_test/outputs/*
+!text_to_motion_test/outputs/.gitkeep
