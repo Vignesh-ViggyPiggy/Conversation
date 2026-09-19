@@ -170,6 +170,9 @@ function captureBoneBaselines(vrm) {
 let activeMotion = null;
 let motionMixer = null;
 const MOTION_BLEND_OUT_SECONDS = 0.3;
+// Blend-in is a touch faster than blend-out -- easing OUT of a gesture back
+// to idle can take its time, but the gesture itself should feel prompt.
+const MOTION_BLEND_IN_SECONDS = 0.2;
 
 function lerp(a, b, t) {
   return a + (b - a) * t;
@@ -238,23 +241,50 @@ function playMotion(message) {
         return { objectName: track.name.slice(0, dot), property: track.name.slice(dot + 1) };
       });
 
+    // Snapshot the live (idle) pose right now, before the mixer gets a
+    // chance to write the clip's first frame -- this is the "from" side of
+    // the blend-in crossfade in advanceMotion() below.
+    const blendInFrom = {};
+    for (const name of boneNames) {
+      blendInFrom[name] = boneNodes[name].quaternion.clone();
+    }
+    const numberBlendInFrom = numberTracks.map(({ objectName, property }) => {
+      const obj = currentVrm.scene.getObjectByName(objectName);
+      return { obj, property, from: obj ? obj[property] : 0 };
+    });
+
     activeMotion = {
       native: true,
       action,
       boneNames,
       numberTracks,
+      blendInFrom,
+      numberBlendInFrom,
       blendStart: null,
       duration: message.duration,
       startTime: elapsedTime,
       expression: message.expression || null,
     };
   } else {
+    // Same idea for keyframe clips: capture each animatable bone's current
+    // delta from baseline (usually 0 if fully idle, but could be mid
+    // blend-out from whatever motion was just interrupted) as the "from"
+    // side of the blend-in below.
+    const blendInFrom = {};
+    for (const name of ANIMATABLE_BONES) {
+      const node = boneNodes[name];
+      const base = boneBaseline[name];
+      if (!node || !base) continue;
+      blendInFrom[name] = [node.rotation.x - base.x, node.rotation.y - base.y, node.rotation.z - base.z];
+    }
+
     activeMotion = {
       native: false,
       keyframes: message.keyframes,
       duration: message.duration,
       startTime: elapsedTime,
       expression: message.expression || null,
+      blendInFrom,
     };
   }
 
@@ -278,7 +308,24 @@ function advanceMotion() {
   const t = elapsedTime - activeMotion.startTime;
 
   if (activeMotion.native) {
-    if (t <= activeMotion.duration) return; // motionMixer is driving the bones this frame
+    if (t < MOTION_BLEND_IN_SECONDS && t <= activeMotion.duration) {
+      // motionMixer.update() (called before advanceMotion() in the render
+      // loop) already wrote this frame's real clip pose into these bones --
+      // crossfade from the pre-motion idle pose into that moving target
+      // rather than replacing it outright, so the clip's own timing is
+      // never delayed, only its first fraction of a second is blended.
+      const alpha = easeInOut(Math.min(1, t / MOTION_BLEND_IN_SECONDS));
+      for (const name of activeMotion.boneNames) {
+        const node = boneNodes[name];
+        const naturalPose = node.quaternion.clone();
+        node.quaternion.slerpQuaternions(activeMotion.blendInFrom[name], naturalPose, alpha);
+      }
+      for (const { obj, property, from } of activeMotion.numberBlendInFrom) {
+        if (obj) obj[property] = lerp(from, obj[property], alpha);
+      }
+    }
+
+    if (t <= activeMotion.duration) return; // motionMixer (blended in above) is driving the bones this frame
 
     if (!activeMotion.blendStart) {
       // Clip just finished -- stop the mixer from fighting our manual
@@ -328,7 +375,17 @@ function advanceMotion() {
 
     let delta = [0, 0, 0];
     if (t <= activeMotion.duration) {
-      delta = poseAtTime(activeMotion.keyframes, t)[name] ?? [0, 0, 0];
+      const natural = poseAtTime(activeMotion.keyframes, t)[name] ?? [0, 0, 0];
+      if (t < MOTION_BLEND_IN_SECONDS) {
+        // Crossfade from the pre-motion pose into the clip's own keyframed
+        // delta, same idea as the native branch above -- avoids snapping
+        // straight to whatever pose the first keyframe happens to specify.
+        const alpha = easeInOut(Math.min(1, t / MOTION_BLEND_IN_SECONDS));
+        const from = activeMotion.blendInFrom[name] ?? [0, 0, 0];
+        delta = [lerp(from[0], natural[0], alpha), lerp(from[1], natural[1], alpha), lerp(from[2], natural[2], alpha)];
+      } else {
+        delta = natural;
+      }
     } else {
       const lastPose = activeMotion.keyframes[activeMotion.keyframes.length - 1].pose[name] ?? [0, 0, 0];
       const alpha = easeInOut((t - activeMotion.duration) / MOTION_BLEND_OUT_SECONDS);
