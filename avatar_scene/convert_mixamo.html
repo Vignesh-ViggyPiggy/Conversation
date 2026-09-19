@@ -246,9 +246,18 @@ async function loadMixamoAnimationFromFile(file, vrm) {
   try {
     const loader = new FBXLoader();
     const asset = await loader.loadAsync(objectUrl);
-    const clip = THREE.AnimationClip.findByName(asset.animations, "mixamo.com");
+    // Real Mixamo exports always name their one clip "mixamo.com". Other
+    // Mixamo-rig-compatible sources (e.g. Viggle PINOC) don't follow that
+    // convention, so fall back to whatever clip the FBX actually has.
+    let clip = THREE.AnimationClip.findByName(asset.animations, "mixamo.com");
     if (!clip) {
-      throw new Error('No "mixamo.com" animation clip found in this FBX -- was it exported from Mixamo?');
+      if (asset.animations.length === 0) {
+        throw new Error("No animation clips found in this FBX at all.");
+      }
+      if (asset.animations.length > 1) {
+        log(`Warning: found ${asset.animations.length} clips and none named "mixamo.com" -- using the first one ("${asset.animations[0].name}").`);
+      }
+      clip = asset.animations[0];
     }
 
     const tracks = [];
